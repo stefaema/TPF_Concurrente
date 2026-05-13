@@ -44,6 +44,8 @@ class RastreadorClientes {
 
     private Cliente mover(int origen, int destino) {
         Cliente c = colas[origen].poll();
+        if (c == null) throw new IllegalStateException(
+            "Cola vacía en P" + origen + ": el marcado de la red y el rastreador divergieron");
         colas[destino].add(c);
         return c;
     }
