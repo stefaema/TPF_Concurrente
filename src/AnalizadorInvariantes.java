@@ -14,12 +14,12 @@ public class AnalizadorInvariantes {
         "\\[\\d{2}:\\d{2}:\\d{2}\\.\\d{3}\\] T(\\d+) \\(cliente=(\\d+)\\)"
     );
 
-    // Patrones exactos de los 4 T-invariantes.
-    private static final String[] PATRONES = {
-        "T0 T1 T3 T4 T7 T8 T11",         // I1: inferior + rechazado
-        "T0 T1 T3 T4 T6 T9 T10 T11",     // I2: inferior + aprobado
-        "T0 T1 T2 T5 T7 T8 T11",         // I3: superior + rechazado
-        "T0 T1 T2 T5 T6 T9 T10 T11",     // I4: superior + aprobado
+    // Expresiones regulares exactas de los 4 T-invariantes (requisito 12).
+    private static final Pattern[] PATRONES = {
+        Pattern.compile("T0 T1 T3 T4 T7 T8 T11"),         // I1: inferior + rechazado
+        Pattern.compile("T0 T1 T3 T4 T6 T9 T10 T11"),     // I2: inferior + aprobado
+        Pattern.compile("T0 T1 T2 T5 T7 T8 T11"),         // I3: superior + rechazado
+        Pattern.compile("T0 T1 T2 T5 T6 T9 T10 T11"),     // I4: superior + aprobado
     };
 
     private static final String[] NOMBRES = {
@@ -77,7 +77,7 @@ public class AnalizadorInvariantes {
 
     private int clasificar(String secuencia) {
         for (int i = 0; i < PATRONES.length; i++) {
-            if (secuencia.equals(PATRONES[i])) return i;
+            if (PATRONES[i].matcher(secuencia).matches()) return i;
         }
         return -1;
     }
