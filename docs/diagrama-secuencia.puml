@@ -1,0 +1,81 @@
+@startuml diagrama-secuencia
+
+skinparam sequenceMessageAlign center
+skinparam responseMessageBelowArrow true
+skinparam sequenceFontSize 12
+
+title Disparo exitoso de T2 (conflicto T2 vs T3 en P3)\nH3 — S_superior, política autoriza
+
+actor "SegmentoIntermedio\n(H3 — S_superior)" as Thread
+participant Monitor
+participant RedPetri
+participant Politica
+participant RastreadorClientes as Rastreador
+participant Logger
+
+Thread -> Monitor : fireTransition(2)
+activate Monitor
+
+Monitor -> Monitor : lock.lock()
+
+note over Monitor
+  Evalúa condición del while:
+  !estaHabilitada(2) || (esConflicto(2) && !debeDisparar(2))
+end note
+
+Monitor -> RedPetri : estaHabilitada(2)
+activate RedPetri
+RedPetri --> Monitor : true
+deactivate RedPetri
+
+note right of Monitor
+  esConflicto(2) = true
+  T2 ∈ TRANSICIONES_CONFLICTO = {2, 3, 6, 7}
+end note
+
+Monitor -> Politica : debeDisparar(2)
+activate Politica
+Politica --> Monitor : true
+deactivate Politica
+
+note over Monitor
+  While = false → no await()\nT2 no es temporal → no sleep
+end note
+
+Monitor -> RedPetri : disparar(2)
+activate RedPetri
+note right of RedPetri : M ← M + Post[2] − Pre[2]
+RedPetri --> Monitor : (void)
+deactivate RedPetri
+
+Monitor -> Rastreador : disparar(2)
+activate Rastreador
+note right of Rastreador : mueve Cliente de cola P3 → cola P5
+Rastreador --> Monitor : cliente
+deactivate Rastreador
+
+Monitor -> RedPetri : verificarInvariantesPlaza()
+activate RedPetri
+note right of RedPetri : valida PI-1..PI-6\nlanza ViolacionInvarianteException si falla
+RedPetri --> Monitor : (ok)
+deactivate RedPetri
+
+Monitor -> Politica : registrarDisparo(2)
+activate Politica
+note right of Politica : c2++\n(separado de debeDisparar para\nevitar efectos en el while)
+Politica --> Monitor : (void)
+deactivate Politica
+
+Monitor -> Logger : registrar(2, cliente.getId())
+activate Logger
+Logger --> Monitor : (void)
+deactivate Logger
+
+Monitor -> Monitor : signalAll(condiciones[i])\npara todo i donde estaHabilitada(i)
+
+Monitor -> Monitor : lock.unlock()
+
+Monitor --> Thread : true
+deactivate Monitor
+
+@enduml

@@ -1,0 +1,185 @@
+@startuml diagrama-clases
+
+skinparam classAttributeIconSize 0
+skinparam classFontSize 12
+skinparam ArrowFontSize 11
+skinparam linetype ortho
+skinparam nodesep 50
+skinparam ranksep 55
+
+' ── Interfaces ──────────────────────────────────────────
+
+interface MonitorInterface {
+    +fireTransition(t: int): boolean
+}
+
+interface Politica {
+    +debeDisparar(t: int): boolean
+    +registrarDisparo(t: int): void
+    +getEstadisticas(): EstadisticasPolitica
+}
+
+' ── Modelo de la red ────────────────────────────────────
+
+class RedPetri {
+    -marcado: int[]
+    -pre: int[][]
+    -post: int[][]
+    --
+    +estaHabilitada(t: int): boolean
+    +disparar(t: int): void
+    +verificarInvariantesPlaza(): void
+}
+
+class ViolacionInvarianteException <<RuntimeException>> {
+    +ViolacionInvarianteException(invariante: String, marcado: int[])
+}
+
+' ── Identidad de tokens ─────────────────────────────────
+
+class Cliente {
+    -id: int
+    --
+    +getId(): int
+}
+
+class RastreadorClientes {
+    -idCounter: int
+    -colas: Map<Integer, Queue<Cliente>>
+    --
+    +disparar(t: int): Cliente
+}
+
+' ── Configuración temporal ──────────────────────────────
+
+class TiemposTransicion {
+    -tiempos: Map<Integer, Long>
+    --
+    +esTemporal(t: int): boolean
+    +getTiempo(t: int): long
+}
+
+' ── Estadísticas de política ────────────────────────────
+
+class EstadisticasPolitica {
+    -disparosT2: int
+    -disparosT3: int
+    -disparosT6: int
+    -disparosT7: int
+    --
+    +formatear(): String
+}
+
+' ── Monitor ─────────────────────────────────────────────
+
+class Monitor {
+    -red: RedPetri
+    -politica: Politica
+    -rastreador: RastreadorClientes
+    -tiempos: TiemposTransicion
+    -logger: Logger
+    -lock: ReentrantLock
+    -condiciones: Condition[]
+    -{static} TRANSICIONES_CONFLICTO: Set<Integer>
+    --
+    +fireTransition(t: int): boolean
+    -esConflicto(t: int): boolean
+}
+
+' ── Políticas ───────────────────────────────────────────
+
+class PoliticaBalanceada {
+    -disparosT2: int
+    -disparosT3: int
+    -disparosT6: int
+    -disparosT7: int
+    --
+    +debeDisparar(t: int): boolean
+    +registrarDisparo(t: int): void
+    +getEstadisticas(): EstadisticasPolitica
+}
+
+class PoliticaPriorizada {
+    -disparosT2: int
+    -disparosT3: int
+    -disparosT6: int
+    -disparosT7: int
+    --
+    +debeDisparar(t: int): boolean
+    +registrarDisparo(t: int): void
+    +getEstadisticas(): EstadisticasPolitica
+}
+
+' ── Hilos ───────────────────────────────────────────────
+
+abstract class Segmento {
+    #monitor: MonitorInterface
+    --
+    +{abstract} run(): void
+}
+
+class SegmentoIntermedio {
+    -transiciones: int[]
+    --
+    +run(): void
+}
+
+class SegmentoSalida {
+    -transicion: int
+    -contador: AtomicInteger
+    -objetivo: int
+    --
+    +run(): void
+}
+
+' ── Observabilidad ──────────────────────────────────────
+
+class Logger {
+    -writer: FileWriter
+    -startTime: Instant
+    --
+    +registrar(t: int, clienteId: int): void
+    +escribirResumen(texto: String): void
+    +cerrar(): void
+}
+
+class AnalizadorInvariantes {
+    -rutaLog: String
+    --
+    +analizar(): void
+}
+
+' ── Punto de entrada ────────────────────────────────────
+
+class Main {
+    +{static} main(args: String[]): void
+}
+
+' ── Relaciones ──────────────────────────────────────────
+
+MonitorInterface <|..  Monitor
+Politica         <|..  PoliticaBalanceada
+Politica         <|..  PoliticaPriorizada
+Segmento         <|--  SegmentoIntermedio
+Segmento         <|--  SegmentoSalida
+
+Monitor *-- RedPetri
+Monitor *-- RastreadorClientes
+Monitor *-- TiemposTransicion
+Monitor *-- Logger
+Monitor o-- Politica
+
+RedPetri ..> ViolacionInvarianteException : "lanza"
+
+RastreadorClientes *-- Cliente
+
+Politica ..> EstadisticasPolitica : "retorna"
+
+Segmento .> MonitorInterface : "usa"
+
+Main ..> Monitor             : "crea"
+Main ..> Segmento            : "crea"
+Main ..> Politica            : "crea"
+Main ..> AnalizadorInvariantes : "invoca"
+
+@enduml

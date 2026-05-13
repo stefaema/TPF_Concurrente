@@ -1,8 +1,12 @@
 # Compiled class file
 *.class
 
+# IntelliJ build output
+out/
+
 # Log file
 *.log
+log.txt
 
 # BlueJ files
 *.ctxt
