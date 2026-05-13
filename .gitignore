@@ -4,9 +4,8 @@
 # IntelliJ build output
 out/
 
-# Log file
-*.log
-log.txt
+# Logs
+logs/
 
 # BlueJ files
 *.ctxt
