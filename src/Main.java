@@ -3,7 +3,8 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 public class Main {
 
-    private static final int OBJETIVO = 186;
+    private static final int    OBJETIVO    = 186;
+    private static final String ARCHIVO_LOG = "logs/log.txt";
 
     // -----------------------------------------------------------------------
     // Tiempos de transiciones temporales {T1, T4, T5, T8, T9, T10} en ms
@@ -48,7 +49,7 @@ public class Main {
         });
 
         RedPetri red = new RedPetri();
-        Logger   logger = new Logger("log.txt");
+        Logger   logger = new Logger(ARCHIVO_LOG);
 
         Politica politica = switch (tipoPolitica) {
             case BALANCEADA -> new PoliticaBalanceada();
@@ -108,7 +109,7 @@ public class Main {
         System.out.println(stats.formatear());
 
         // Verificar T-invariantes por regex sobre el log generado.
-        new AnalizadorInvariantes("log.txt").analizar();
+        new AnalizadorInvariantes(ARCHIVO_LOG, OBJETIVO).analizar();
 
         System.out.println("Ejecución finalizada.");
     }

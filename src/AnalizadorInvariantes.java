@@ -23,16 +23,18 @@ public class AnalizadorInvariantes {
     };
 
     private static final String[] NOMBRES = {
-        "I1 (inferior + rechazado) ",
+        "I1 (inferior + rechazado)",
         "I2 (inferior + aprobado) ",
         "I3 (superior + rechazado)",
         "I4 (superior + aprobado) ",
     };
 
     private final String archivo;
+    private final int objetivo;
 
-    public AnalizadorInvariantes(String archivo) {
-        this.archivo = archivo;
+    public AnalizadorInvariantes(String archivo, int objetivo) {
+        this.archivo  = archivo;
+        this.objetivo = objetivo;
     }
 
     public void analizar() {
@@ -83,32 +85,50 @@ public class AnalizadorInvariantes {
     }
 
     private void imprimirReporte(int total, int[] conteos, int incompletos, int invalidos) {
+        String sep = "=".repeat(52);
         System.out.println();
-        System.out.println("=== Análisis de T-invariantes ===");
-        System.out.printf("Total invariantes completados: %d%n", total);
-        for (int i = 0; i < 4; i++) {
-            System.out.printf("  %s: %d%n", NOMBRES[i], conteos[i]);
-        }
+        System.out.println(sep);
+        System.out.println("  ANÁLISIS DE T-INVARIANTES");
+        System.out.println(sep);
+
+        String estadoTotal = (total == objetivo)
+            ? "[OK]"
+            : String.format("[FALLO — se esperaban %d]", objetivo);
+        System.out.printf("Invariantes completados : %d / %d  %s%n", total, objetivo, estadoTotal);
+
         if (incompletos > 0)
-            System.out.printf("  Secuencias incompletas (sin T11 final): %d%n", incompletos);
+            System.out.printf("Secuencias incompletas  : %d  (shutdown antes de T11)%n", incompletos);
         if (invalidos > 0)
-            System.out.printf("  Secuencias inválidas (terminan en T11 pero no matchean): %d%n", invalidos);
+            System.out.printf("Secuencias inválidas    : %d  [FALLO — T11 sin patrón conocido]%n", invalidos);
+
+        System.out.println();
+        System.out.println("  Desglose por camino:");
+        for (int i = 0; i < 4; i++) {
+            double pct = total > 0 ? 100.0 * conteos[i] / total : 0.0;
+            System.out.printf("    %s : %3d  (%5.1f%%)%n", NOMBRES[i], conteos[i], pct);
+        }
 
         if (total > 0) {
-            int totalAgente = conteos[2] + conteos[3] + conteos[0] + conteos[1];
-            int superior    = conteos[2] + conteos[3];
-            int aprobados   = conteos[1] + conteos[3];
-            System.out.printf("%nDistribución de agentes:%n");
-            System.out.printf("  Superior (I3+I4): %d  (%.1f%%)%n",
-                superior, 100.0 * superior / totalAgente);
-            System.out.printf("  Inferior (I1+I2): %d  (%.1f%%)%n",
-                totalAgente - superior, 100.0 * (totalAgente - superior) / totalAgente);
-            System.out.printf("Distribución de decisiones:%n");
-            System.out.printf("  Aprobados (I2+I4): %d  (%.1f%%)%n",
-                aprobados, 100.0 * aprobados / total);
-            System.out.printf("  Cancelados (I1+I3): %d  (%.1f%%)%n",
-                total - aprobados, 100.0 * (total - aprobados) / total);
+            int superior   = conteos[2] + conteos[3];
+            int inferior   = conteos[0] + conteos[1];
+            int aprobados  = conteos[1] + conteos[3];
+            int cancelados = conteos[0] + conteos[2];
+
+            System.out.println();
+            System.out.println("  Distribución de agentes:");
+            System.out.printf("    Agente superior (I3+I4) : %3d  (%5.1f%%)%n",
+                superior, 100.0 * superior / total);
+            System.out.printf("    Agente inferior (I1+I2) : %3d  (%5.1f%%)%n",
+                inferior, 100.0 * inferior / total);
+
+            System.out.println();
+            System.out.println("  Distribución de decisiones:");
+            System.out.printf("    Confirmadas  (I2+I4) : %3d  (%5.1f%%)%n",
+                aprobados,  100.0 * aprobados  / total);
+            System.out.printf("    Canceladas   (I1+I3) : %3d  (%5.1f%%)%n",
+                cancelados, 100.0 * cancelados / total);
         }
-        System.out.println("=================================");
+
+        System.out.println(sep);
     }
 }
