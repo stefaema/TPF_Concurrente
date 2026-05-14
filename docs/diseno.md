@@ -307,53 +307,40 @@ Siempre hay al menos una transición habilitada por política. ∎
 
 ### `PoliticaPriorizada` *(implements Politica)*
 
-**Objetivo**: T2 ≥ 75% del total T2+T3; T6 ≥ 80% del total T6+T7.
+**Objetivo**: T2 = 75% del total T2+T3; T6 = 80% del total T6+T7.
 
-#### Algoritmo
+#### Algoritmo — bloqueo bidireccional
 
-El principio central es: **la transición preferida nunca se bloquea por política**. La no-preferida se bloquea cuando disparar una vez más excedería su cupo porcentual.
+La implementación unidireccional (solo bloquear la no-preferida) produce proporciones muy alejadas del objetivo: en la práctica el hilo de T2, al nunca bloquearse por política, siempre gana la carrera al lock sobre el token de P3, resultando en ~91% en lugar de 75%.
 
-Para cada par `(tP: preferida, tN: no-preferida)` con umbral preferida `u`:
+La solución correcta es el **bloqueo bidireccional**: la transición preferida también se bloquea cuando ya supera el ratio objetivo, obligando a su hilo a `await()` y cediendo el token a la no-preferida. El ratio emerge del algoritmo, no del azar del scheduler.
 
-```
-debeDisparar(tP): true                              (siempre)
-
-debeDisparar(tN): (c(tN) + 1) * factor ≤ c(tP) + c(tN) + 1
-                  donde factor = round(1 / (1 - u))
-```
-
-La inecuación se deriva directamente de la condición de cupo:
+Para el par T2/T3 (ratio objetivo 3:1):
 
 ```
-(c(tN) + 1) / (total + 1) ≤ (1 - u)
-→ (c(tN) + 1) ≤ (1 - u) * (total + 1)
-→ (c(tN) + 1) * [1/(1-u)] ≤ total + 1
+debeDisparar(T2): (c2 + 1) ≤ 3 * (c3 + 1)    →  T2 se bloquea cuando ya va 3:1 adelante
+debeDisparar(T3): (c3 + 1) * 4 ≤ (c2 + c3 + 1) →  T3 se bloquea cuando superaría el 25%
 ```
 
-Como `u` es 75% o 80% (racionales de denominador pequeño), `1/(1-u)` es un entero exacto, eliminando cualquier error de punto flotante:
-
-| Par | Preferida | u | Cupo no-pref. | Factor = 1/(1−u) |
-|-----|-----------|---|---------------|------------------|
-| T2 vs T3 | T2 | 75% | ≤ 25% | **4** |
-| T6 vs T7 | T6 | 80% | ≤ 20% | **5** |
-
-Condiciones concretas para este sistema:
+Para el par T6/T7 (ratio objetivo 4:1):
 
 ```
-// Conflicto T2/T3 (agente superior vs inferior):
-debeDisparar(T2): true
-debeDisparar(T3): (c3 + 1) * 4 ≤ (c2 + c3 + 1)
-
-// Conflicto T6/T7 (aprobación vs rechazo):
-debeDisparar(T6): true
-debeDisparar(T7): (c7 + 1) * 5 ≤ (c6 + c7 + 1)
+debeDisparar(T6): (c6 + 1) ≤ 4 * (c7 + 1)    →  T6 se bloquea cuando ya va 4:1 adelante
+debeDisparar(T7): (c7 + 1) * 5 ≤ (c6 + c7 + 1) →  T7 se bloquea cuando superaría el 20%
 ```
 
 `registrarDisparo(t)`: incrementa `c(t)` en 1.
 
 #### Prueba de liveness
 
-La transición preferida retorna `true` incondicionalmente. Si P3 (o P9+P10) tiene token y la no-preferida está bloqueada por política, el hilo de la preferida puede avanzar. Si además la preferida está estructuralmente deshabilitada (e.g., P6=0 porque el agente superior está ocupado), ambos hilos esperan — pero esto es bloqueo estructural de la red, no de la política. La red no tiene deadlock (demostrado en el análisis PIPE), así que P6 se libera cuando T5 dispara y el sistema continúa. ∎
+Para T2/T3 — ambas no pueden estar simultáneamente bloqueadas:
+
+- Si T2 bloqueada: `c2+1 > 3*(c3+1)` → `c2 ≥ 3*c3+3` → `(c3+1)*4 = 4*c3+4 ≤ c2+c3+1` → T3 habilitada ✓
+- Si T3 bloqueada: `(c3+1)*4 > c2+c3+1` → `c2 ≤ 3*c3+2` → `c2+1 ≤ 3*(c3+1)` → T2 habilitada ✓
+
+**Propiedad más fuerte**: en todo instante exactamente *una* del par está habilitada — ambas condiciones son mutuamente excluyentes. Esto garantiza que el hilo de la "otra" transición esté en `await()` cuando la primera puede disparar: no hay carrera entre H2 y H3 por el token de P3.
+
+Mismo razonamiento aplica a T6/T7. ∎
 
 #### Resultado esperado para 186 invariantes
 
