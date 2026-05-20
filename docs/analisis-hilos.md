@@ -294,28 +294,32 @@ El estado M(P14)=5 implica M(P0)=M(P2)=M(P3)=...=M(P13)=0. Verificación contra 
 
 El estado es alcanzable (todos los invariantes satisfechos). Una secuencia que lo alcanza: los 5 clientes pasan secuencialmente por el ciclo completo (entran, van a un agente, pasan por aprobación/rechazo, llegan a P14) sin que T11 dispare en ningún momento. Dado que P10 se restaura tras cada T8 o T10, el siguiente cliente puede iniciar su ciclo de aprobación inmediatamente.
 
-**Max(M(P14)) = 5 → 5 hilos para S_salida.**
+**Max(M(P14)) = 5 → el Algoritmo 4.3 prescribe 5 hilos para S_salida.**
 
 Esto es coherente con la consigna (referencia al artículo): *"si el IT presenta un join con otro IT, luego del join debe haber tantos hilos como tokens simultáneos en la plaza."* La plaza del join es P14, y el máximo de tokens simultáneos en ella es 5.
+
+> **Nota de implementación — T11 es inmediata:** el resultado del Algoritmo 4.3 es matemáticamente correcto (5 hilos), pero solo produce paralelismo real cuando las transiciones del segmento son **temporales**. En ese caso, cada hilo suelta el lock durante su `Thread.sleep()`, permitiendo que múltiples hilos ejecuten sus actividades en paralelo. T11 es una transición **inmediata**: no tiene sleep fuera del lock, de modo que todo el ciclo de `fireTransition(11)` — verificar habilitación, disparar, rastrear, señalizar — ocurre íntegramente dentro de la sección crítica. Con N hilos compitiendo por T11, solo uno puede estar dentro del lock en cada instante; los demás aguardan. El throughput resultante es idéntico al de 1 solo hilo. Por esta razón, la implementación instancia **1 único hilo** para S_salida en lugar de los 5 prescritos por el algoritmo. La desviación está justificada: el criterio de "máximo paralelismo" del artículo no se ve afectado porque, para una transición inmediata, N hilos ≡ 1 hilo en términos de progreso del sistema. Ver preguntas-respuestas.md §3 para el análisis completo.
 
 ---
 
 ### Tabla resumen
 
-| Segmento | PS_i | Restricción formal | Max(MS_i) | Hilos |
-|---|---|---|---|---|
-| S_A | {P2} | PI-1: M(P1)+M(P2)=1, P1 recurso 1-acotado | 1 | 1 |
-| S_inferior | {P8} | PI-6: M(P7)+M(P8)=1, P7 recurso 1-acotado | 1 | 1 |
-| S_superior | {P5} | PI-5: M(P5)+M(P6)=1, P6 recurso 1-acotado | 1 | 1 |
-| S_aprobacion | {P11, P13} | PI-2: M(P10)+M(P11)+M(P12)+M(P13)=1 | 1 | 1 |
-| S_rechazo | {P12} | PI-2: M(P10)+M(P11)+M(P12)+M(P13)=1 | 1 | 1 |
-| S_salida | {P14} | PI-3: M(P14) ≤ 5; estado M(P14)=5 alcanzable | **5** | **5** |
+| Segmento | PS_i | Restricción formal | Max(MS_i) | Hilos (Alg. 4.3) | Hilos implementados |
+|---|---|---|---|---|---|
+| S_A | {P2} | PI-1: M(P1)+M(P2)=1, P1 recurso 1-acotado | 1 | 1 | 1 |
+| S_inferior | {P8} | PI-6: M(P7)+M(P8)=1, P7 recurso 1-acotado | 1 | 1 | 1 |
+| S_superior | {P5} | PI-5: M(P5)+M(P6)=1, P6 recurso 1-acotado | 1 | 1 | 1 |
+| S_aprobacion | {P11, P13} | PI-2: M(P10)+M(P11)+M(P12)+M(P13)=1 | 1 | 1 | 1 |
+| S_rechazo | {P12} | PI-2: M(P10)+M(P11)+M(P12)+M(P13)=1 | 1 | 1 | 1 |
+| S_salida | {P14} | PI-3: M(P14) ≤ 5; estado M(P14)=5 alcanzable | **5** | **5** | **1** (†) |
 
-> **Resultado Algoritmo 4.3: total de hilos = 1+1+1+1+1+5 = 10.**
+> (†) T11 es inmediata: múltiples hilos se serializarían igual que 1 solo. El Algoritmo 4.3 prescribe 5; la implementación usa 1 por equivalencia funcional.
+
+> **Resultado Algoritmo 4.3: 1+1+1+1+1+5 = 10 hilos teóricos. Implementación: 6 hilos (la reducción de S_salida de 5 a 1 no altera el paralelismo real del sistema).**
 
 ---
 
-## Resultado: 10 hilos
+## Resultado: 6 hilos (implementados) / 10 hilos (teórico Alg. 4.3)
 
 | Hilo | Segmento | Transiciones | Rol |
 |---|---|---|---|
@@ -324,7 +328,7 @@ Esto es coherente con la consigna (referencia al artículo): *"si el IT presenta
 | **H3** | S_superior | T2, T5 | Atención por agente de reservas superior |
 | **H4** | S_aprobacion | T6, T9, T10 | Aprobación → Confirmación → Pago |
 | **H5** | S_rechazo | T7, T8 | Rechazo → Cancelación |
-| **H6–H10** | S_salida | T11 | Retiro del cliente y devolución al buffer (hasta 5 simultáneos) |
+| **H6** | S_salida | T11 | Retiro del cliente y devolución al buffer (único hilo; T11 es inmediata) |
 
 ---
 
@@ -372,10 +376,10 @@ Esto es coherente con la consigna (referencia al artículo): *"si el IT presenta
                   y árbol de alcanzabilidad)
                                       │
                     ┌─────────────────▼────────────────────┐
-                    │    H6–H10 (S_salida): T11             │
-                    │    PS = {P14},  max = 5 hilos         │
-                    │    (hasta 5 clientes retirándose      │
-                    │     en paralelo)                      │
+                    │    H6 (S_salida): T11                 │
+                    │    PS = {P14},  Alg.4.3 = 5 hilos     │
+                    │    T11 INMEDIATA → serializa en lock  │
+                    │    Implementación: 1 hilo suficiente  │
                     └──────────────────────────────────────┘
 ```
 
@@ -394,14 +398,18 @@ El Monitor resuelve cada conflicto consultando al objeto Política **dentro de l
 
 ## Resumen de los tres algoritmos
 
-| Algoritmo | Resultado | Explicación |
-|---|---|---|
-| **4.1** — Hilos activos simultáneos máximos | **5** | suma(PA) = 5 − M(P0); máximo cuando M(P0)=0 |
-| **4.2** — Segmentos de ejecución | **6 segmentos** | S_A, S_inferior, S_superior, S_aprobacion, S_rechazo, S_salida |
-| **4.3** — Hilos máximos por segmento | **10 hilos en total** | 1+1+1+1+1+5 (S_salida acotada por M(P14)=5) |
+| Algoritmo | Resultado teórico | Resultado implementado | Explicación |
+|---|---|---|---|
+| **4.1** — Hilos activos simultáneos máximos | **5** | **5** | suma(PA) = 5 − M(P0); máximo cuando M(P0)=0 |
+| **4.2** — Segmentos de ejecución | **6 segmentos** | **6 segmentos** | S_A, S_inferior, S_superior, S_aprobacion, S_rechazo, S_salida |
+| **4.3** — Hilos máximos por segmento | **10 hilos** (1+1+1+1+1+**5**) | **6 hilos** (1+1+1+1+1+**1**) | S_salida reducida de 5 a 1: T11 es inmediata, no temporal |
 
-**Diferencia entre 5 (Alg. 4.1) y 10 (Alg. 4.3):**
+**Diferencia entre 5 (Alg. 4.1) y 10 (Alg. 4.3 teórico):**
 
-El Algoritmo 4.1 mide cuántos hilos están *activos* en el mismo instante (procesando una transición o en un estado intermedio). El máximo es 5 porque siempre hay al menos un hilo bloqueado: mientras 5 clientes ocupan plazas de acción activas, el segmento S_salida también puede estar ocupado pero su hilo estará *esperando* el token de P14.
+El Algoritmo 4.1 mide cuántos hilos pueden estar *activos* en el mismo instante. El máximo es 5 porque siempre hay al menos un hilo bloqueado: mientras 5 clientes ocupan plazas de acción activas, el hilo de S_salida estará *esperando* el token de P14 o habrá ya terminado.
 
-El Algoritmo 4.3 mide cuántos hilos hay que *crear* para cubrir el paralelismo máximo del sistema. S_salida requiere 5 hilos porque P14 puede acumular 5 tokens simultáneamente: los 5 hilos H6–H10 compiten para disparar T11, manejando hasta 5 retiros en paralelo. En cualquier instante, a lo sumo 5 de los 10 hilos estarán activos (en consonancia con Alg. 4.1).
+El Algoritmo 4.3 mide cuántos hilos hay que *crear* para cubrir el paralelismo máximo del sistema. Para S_salida, el algoritmo prescribe 5 porque P14 puede acumular 5 tokens simultáneamente. Sin embargo, la ventaja de múltiples hilos solo se concreta cuando la transición es **temporal**: el hilo suelta el lock durante el sleep, permitiendo que otros hilos progresen en paralelo. T11 es inmediata (sin sleep), por lo que todo el disparo ocurre dentro del lock y los hilos se serializan inevitablemente. El resultado práctico es que 1 hilo y 5 hilos son equivalentes para T11: la implementación usa 1.
+
+**Diferencia entre 10 (teórico) y 6 (implementado):**
+
+La reducción de 10 a 6 aplica exclusivamente a S_salida. Todos los demás segmentos conservan el número de hilos prescrito por el algoritmo. El paralelismo real del sistema no se ve afectado: la cota de 5 hilos activos simultáneos (Alg. 4.1) se sigue cumpliendo, ya que los 5 clientes que pueden estar en plazas de acción simultáneamente corresponden a los segmentos H1–H5, no a H6.
