@@ -88,6 +88,8 @@ public class Monitor implements MonitorInterface {
             logger.registrar(t, cliente.getId());
 
             // Actualizar relojes y despertar hilos en espera.
+            // La transición que acaba de disparar inicia un nuevo período de habilitación.
+            tiempoHabilitacion[t] = -1;
             long ahora = System.currentTimeMillis();
             for (int i = 0; i < NUM_TRANSICIONES; i++) {
                 boolean habilitada = red.estaHabilitada(i);

@@ -97,8 +97,7 @@ public class AnalizadorInvariantes {
 
     /** Calcula e imprime el reporte completo por consola. */
     public void analizar() {
-        Resultado r = calcular();
-        imprimirReporte(r);
+        imprimirReporte(calcular(), objetivo);
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -130,7 +129,7 @@ public class AnalizadorInvariantes {
         return -1;
     }
 
-    private void imprimirReporte(Resultado r) {
+    static void imprimirReporte(Resultado r, int objetivo) {
         String sep = "=".repeat(52);
         System.out.println();
         System.out.println(sep);

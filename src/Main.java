@@ -166,7 +166,7 @@ public class Main {
         else
             System.out.printf("Violaciones de ventana β: %d disparo(s) superaron β ✗%n",
                 r.violacionesBeta);
-        new AnalizadorInvariantes(LOG_BATCH, OBJETIVO).analizar();
+        AnalizadorInvariantes.imprimirReporte(r.analisis, OBJETIVO);
         System.out.println("Ejecución finalizada.");
     }
 

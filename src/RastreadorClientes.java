@@ -51,6 +51,9 @@ class RastreadorClientes {
     }
 
     private Cliente descartar() {
-        return colas[14].poll();
+        Cliente c = colas[14].poll();
+        if (c == null) throw new IllegalStateException(
+            "Cola vacía en P14: el marcado de la red y el rastreador divergieron");
+        return c;
     }
 }
