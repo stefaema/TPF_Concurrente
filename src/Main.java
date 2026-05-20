@@ -11,14 +11,14 @@ public class Main {
     private static final String DIR_LOGS  = "logs";
     private static final String LOG_BATCH = DIR_LOGS + "/log.txt";
 
-    // Tiempos por defecto de las transiciones temporales {T1,T4,T5,T8,T9,T10} en ms.
-    private static final Map<Integer, Long> TIEMPOS_DEFAULT = Map.of(
-        1,  100L,   // T1:  ingreso del cliente a la sala de espera
-        4,  200L,   // T4:  atención finalizada por agente de reservas inferior
-        5,  200L,   // T5:  atención finalizada por agente de reservas superior
-        8,  100L,   // T8:  procesamiento de cancelación
-        9,  150L,   // T9:  procesamiento de confirmación
-        10, 150L    // T10: procesamiento de pago
+    // Ventanas temporales por defecto {T1,T4,T5,T8,T9,T10}: [alfa, beta] ms desde habilitación.
+    private static final Map<Integer, TiemposTransicion.VentanaTemporal> TIEMPOS_DEFAULT = Map.of(
+         1, new TiemposTransicion.VentanaTemporal( 80, 120),  // T1:  ingreso a la sala de espera
+         4, new TiemposTransicion.VentanaTemporal(150, 250),  // T4:  atención agente inferior
+         5, new TiemposTransicion.VentanaTemporal(150, 250),  // T5:  atención agente superior
+         8, new TiemposTransicion.VentanaTemporal( 50, 150),  // T8:  procesamiento de cancelación
+         9, new TiemposTransicion.VentanaTemporal(100, 200),  // T9:  procesamiento de confirmación
+        10, new TiemposTransicion.VentanaTemporal(100, 200)   // T10: procesamiento de pago
     );
 
     // ═════════════════════════════════════════════════════════════════════════
@@ -41,23 +41,25 @@ public class Main {
     }
 
     static final class ResultadoEjecucion {
-        final int                          numero;
-        final TipoPolitica                 politica;
-        final long                         duracionMs;
-        final EstadisticasPolitica         estadisticas;
+        final int                             numero;
+        final TipoPolitica                    politica;
+        final long                            duracionMs;
+        final EstadisticasPolitica            estadisticas;
         final AnalizadorInvariantes.Resultado analisis;
-        final String                       archivoLog;
+        final String                          archivoLog;
+        final int                             violacionesBeta;
 
         ResultadoEjecucion(int numero, TipoPolitica politica, long duracionMs,
                            EstadisticasPolitica estadisticas,
                            AnalizadorInvariantes.Resultado analisis,
-                           String archivoLog) {
-            this.numero       = numero;
-            this.politica     = politica;
-            this.duracionMs   = duracionMs;
-            this.estadisticas = estadisticas;
-            this.analisis     = analisis;
-            this.archivoLog   = archivoLog;
+                           String archivoLog, int violacionesBeta) {
+            this.numero          = numero;
+            this.politica        = politica;
+            this.duracionMs      = duracionMs;
+            this.estadisticas    = estadisticas;
+            this.analisis        = analisis;
+            this.archivoLog      = archivoLog;
+            this.violacionesBeta = violacionesBeta;
         }
     }
 
@@ -159,6 +161,11 @@ public class Main {
             1, 1, LOG_BATCH);
 
         System.out.println(r.estadisticas.formatear());
+        if (r.violacionesBeta == 0)
+            System.out.println("Violaciones de ventana β: ninguna ✓");
+        else
+            System.out.printf("Violaciones de ventana β: %d disparo(s) superaron β ✗%n",
+                r.violacionesBeta);
         new AnalizadorInvariantes(LOG_BATCH, OBJETIVO).analizar();
         System.out.println("Ejecución finalizada.");
     }
@@ -189,19 +196,20 @@ public class Main {
             new Thread(new SegmentoIntermedio(monitor, new int[]{6, 9, 10}), "H4-aprobacion"),
             new Thread(new SegmentoIntermedio(monitor, new int[]{7, 8}),     "H5-rechazo"),
         };
-        Thread[] hilosSalida = new Thread[5];
-        for (int i = 0; i < 5; i++) {
-            hilosSalida[i] = new Thread(
-                new SegmentoSalida(monitor, 11, contador, OBJETIVO),
-                "H" + (i + 6) + "-salida");
-        }
+        // H6 (S_salida): el Algoritmo 4.3 prescribe 5 hilos porque M(P14) puede llegar a 5.
+        // T11 es inmediata (no temporal): todo fireTransition(11) ocurre dentro del lock,
+        // sin sleep fuera. Múltiples hilos se serializarían igual que 1 solo. Se instancia
+        // un único hilo. Ver docs/preguntas-respuestas.md §3.
+        Thread[] hilosSalida = new Thread[1];
+        hilosSalida[0] = new Thread(
+            new SegmentoSalida(monitor, 11, contador, OBJETIVO),
+            "H6-salida");
 
         long   inicio         = System.currentTimeMillis();
         Thread progresoThread = iniciarProgreso(contador, numEjecucion, totalEjecuciones, tipo);
 
         for (Thread t : hilosIntermedios) t.start();
         for (Thread t : hilosSalida)      t.start();
-1
 
         try {
             for (Thread t : hilosSalida)      t.join();
@@ -217,14 +225,23 @@ public class Main {
         try { progresoThread.join(); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
         imprimirBarraFinal(numEjecucion, totalEjecuciones, tipo, duracion);
 
-        EstadisticasPolitica stats = politica.getEstadisticas();
-        logger.escribirResumen(stats.formatear());
+        EstadisticasPolitica stats       = politica.getEstadisticas();
+        int                  violaciones = logger.getViolaciones();
+
+        String resumen = stats.formatear();
+        if (violaciones > 0)
+            resumen += String.format(
+                "%n--- Violaciones de ventana β: %d disparo(s) fuera del límite superior ---",
+                violaciones);
+        else
+            resumen += String.format("%n--- Violaciones de ventana β: ninguna ---");
+        logger.escribirResumen(resumen);
         logger.cerrar();
 
         AnalizadorInvariantes.Resultado analisis =
             new AnalizadorInvariantes(archivoLog, OBJETIVO).calcular();
 
-        return new ResultadoEjecucion(numEjecucion, tipo, duracion, stats, analisis, archivoLog);
+        return new ResultadoEjecucion(numEjecucion, tipo, duracion, stats, analisis, archivoLog, violaciones);
     }
 
     // ═════════════════════════════════════════════════════════════════════════
@@ -272,13 +289,13 @@ public class Main {
     // ═════════════════════════════════════════════════════════════════════════
 
     private static void mostrarTablaResumen(List<ResultadoEjecucion> resultados) {
-        final int SEP = 74;
+        final int SEP = 84;
         System.out.println();
         System.out.println("  " + "═".repeat(SEP));
         System.out.println("  RESUMEN DE EJECUCIONES");
         System.out.println("  " + "═".repeat(SEP));
-        System.out.printf("  %-4s  %-11s  %-7s  %-26s  %-20s%n",
-            "Ej.", "Política", "Tiempo", "Agente superior", "Confirmadas");
+        System.out.printf("  %-4s  %-11s  %-7s  %-26s  %-20s  %s%n",
+            "Ej.", "Política", "Tiempo", "Agente superior", "Confirmadas", "β viol.");
         System.out.println("  " + "─".repeat(SEP));
 
         for (ResultadoEjecucion r : resultados) {
@@ -295,10 +312,12 @@ public class Main {
                 okApb  = pctApb >= 45.0 && pctApb <= 55.0; etqApb = "obj~50%";
             }
 
-            System.out.printf("  %-4d  %-11s  %4.1fs    %5.1f%% %-8s %s     %5.1f%% %-8s %s%n",
+            String betaStr = r.violacionesBeta == 0 ? "✓" : "✗ " + r.violacionesBeta;
+            System.out.printf("  %-4d  %-11s  %4.1fs    %5.1f%% %-8s %s     %5.1f%% %-8s %s   %s%n",
                 r.numero, r.politica.name(), r.duracionMs / 1000.0,
                 pctSup, etqSup, okSup ? "✓" : "✗",
-                pctApb, etqApb, okApb ? "✓" : "✗");
+                pctApb, etqApb, okApb ? "✓" : "✗",
+                betaStr);
         }
         System.out.println("  " + "═".repeat(SEP));
     }
@@ -371,6 +390,14 @@ public class Main {
             .forEach(l -> System.out.println("    " + l));
 
         System.out.println();
+        System.out.println("  Ventana temporal β:");
+        if (r.violacionesBeta == 0)
+            System.out.println("    Sin violaciones ✓");
+        else
+            System.out.printf("    %d disparo(s) superaron β ✗  (ver [WARN] en el log)%n",
+                r.violacionesBeta);
+
+        System.out.println();
         System.out.printf("  Log → %s%n", r.archivoLog);
         if (a.incompletos > 0)
             System.out.printf("  (secuencias incompletas al shutdown: %d)%n", a.incompletos);
@@ -384,32 +411,39 @@ public class Main {
 
     private static TiemposTransicion elegirTiempos(Scanner sc) {
         System.out.println();
-        System.out.println("  Tiempos de transición:");
+        System.out.println("  Ventanas temporales de transición [alfa, beta] ms:");
         System.out.printf("    [1] Default  (%s)%n", formatearTiempos(new TiemposTransicion(TIEMPOS_DEFAULT)));
         System.out.println("    [2] Personalizar");
         int opcion = leerEntero(sc, "  Opción", 1, 1, 2);
 
         if (opcion == 1) return new TiemposTransicion(TIEMPOS_DEFAULT);
 
-        System.out.println("    (Enter conserva el valor por defecto)");
-        int[]    ids    = {  1,                4,                5,                8,              9,               10    };
+        System.out.println("    (Enter conserva el valor por defecto — alfa <= beta)");
+        int[]    ids    = {  1,                 4,                  5,                  8,
+                             9,                 10                 };
         String[] labels = { "T1  ingreso sala", "T4  atención inf.", "T5  atención sup.",
-                             "T8  cancelación ", "T9  confirmación", "T10 pago         " };
+                             "T8  cancelación ", "T9  confirmación ", "T10 pago          " };
 
-        Map<Integer, Long> custom = new LinkedHashMap<>();
+        Map<Integer, TiemposTransicion.VentanaTemporal> custom = new LinkedHashMap<>();
         for (int i = 0; i < ids.length; i++) {
-            long def = TIEMPOS_DEFAULT.get(ids[i]);
-            long val = leerLong(sc,
-                String.format("    %s", labels[i]), def, 0, 30_000);
-            custom.put(ids[i], val);
+            TiemposTransicion.VentanaTemporal def = TIEMPOS_DEFAULT.get(ids[i]);
+            System.out.printf("    %s%n", labels[i]);
+            long alfa = leerLong(sc, "      alfa (mínimo)", def.alfa(), 0, 30_000);
+            long beta = leerLong(sc, "      beta (máximo)", Math.max(def.beta(), alfa), alfa, 30_000);
+            custom.put(ids[i], new TiemposTransicion.VentanaTemporal(alfa, beta));
         }
         return new TiemposTransicion(custom);
     }
 
     private static String formatearTiempos(TiemposTransicion t) {
-        return String.format("T1=%dms  T4=%dms  T5=%dms  T8=%dms  T9=%dms  T10=%dms",
-            t.getTiempo(1), t.getTiempo(4), t.getTiempo(5),
-            t.getTiempo(8), t.getTiempo(9), t.getTiempo(10));
+        return String.format(
+            "T1=[%d,%d]  T4=[%d,%d]  T5=[%d,%d]  T8=[%d,%d]  T9=[%d,%d]  T10=[%d,%d]  ms",
+            t.getAlfa(1),  t.getBeta(1),
+            t.getAlfa(4),  t.getBeta(4),
+            t.getAlfa(5),  t.getBeta(5),
+            t.getAlfa(8),  t.getBeta(8),
+            t.getAlfa(9),  t.getBeta(9),
+            t.getAlfa(10), t.getBeta(10));
     }
 
     // ═════════════════════════════════════════════════════════════════════════

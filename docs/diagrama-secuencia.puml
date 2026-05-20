@@ -19,8 +19,10 @@ activate Monitor
 Monitor -> Monitor : lock.lock()
 
 note over Monitor
-  Evalúa condición del while:
-  !estaHabilitada(2) || (esConflicto(2) && !debeDisparar(2))
+  Evalúa listaParaDisparar(2):
+  (1) estaHabilitada(2)?
+  (2) esConflicto(2) && debeDisparar(2)?
+  (3) esTemporal(2)? → NO (T2 es inmediata)
 end note
 
 Monitor -> RedPetri : estaHabilitada(2)
@@ -39,7 +41,8 @@ Politica --> Monitor : true
 deactivate Politica
 
 note over Monitor
-  While = false → no await()\nT2 no es temporal → no sleep
+  T2 no es temporal → sin awaitUntil
+  listaParaDisparar(2) = true → sale del while
 end note
 
 Monitor -> RedPetri : disparar(2)
@@ -71,7 +74,15 @@ activate Logger
 Logger --> Monitor : (void)
 deactivate Logger
 
-Monitor -> Monitor : signalAll(condiciones[i])\npara todo i donde estaHabilitada(i)
+note over Monitor
+  Para cada transición i:
+  • Si recién habilitada: tiempoHabilitacion[i] = ahora
+                          tiempoObjetivo[i] = ahora + alfa + random(0, beta−alfa)
+  • Si deshabilitada:     tiempoHabilitacion[i] = −1
+  • Si habilitada:        condiciones[i].signalAll()
+end note
+
+Monitor -> Monitor : actualizar relojes + signalAll(condiciones[i])
 
 Monitor -> Monitor : lock.unlock()
 

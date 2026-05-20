@@ -23,12 +23,13 @@ interface Politica {
 
 class RedPetri {
     -marcado: int[]
-    -pre: int[][]
-    -post: int[][]
+    -{static} PRE: int[][]
+    -{static} POST: int[][]
     --
     +estaHabilitada(t: int): boolean
     +disparar(t: int): void
     +verificarInvariantesPlaza(): void
+    +getMarcado(): int[]
 }
 
 class ViolacionInvarianteException <<RuntimeException>> {
@@ -45,19 +46,27 @@ class Cliente {
 
 class RastreadorClientes {
     -idCounter: int
-    -colas: Map<Integer, Queue<Cliente>>
+    -colas: Queue<Cliente>[]
     --
     +disparar(t: int): Cliente
 }
 
 ' ── Configuración temporal ──────────────────────────────
 
+class VentanaTemporal <<record>> {
+    +alfa: long
+    +beta: long
+}
+
 class TiemposTransicion {
-    -tiempos: Map<Integer, Long>
+    -ventanas: Map<Integer, VentanaTemporal>
     --
     +esTemporal(t: int): boolean
-    +getTiempo(t: int): long
+    +getAlfa(t: int): long
+    +getBeta(t: int): long
 }
+
+TiemposTransicion +-- VentanaTemporal
 
 ' ── Estadísticas de política ────────────────────────────
 
@@ -67,6 +76,10 @@ class EstadisticasPolitica {
     -disparosT6: int
     -disparosT7: int
     --
+    +getDisparosT2(): int
+    +getDisparosT3(): int
+    +getDisparosT6(): int
+    +getDisparosT7(): int
     +formatear(): String
 }
 
@@ -81,18 +94,23 @@ class Monitor {
     -lock: ReentrantLock
     -condiciones: Condition[]
     -{static} TRANSICIONES_CONFLICTO: Set<Integer>
+    -tiempoHabilitacion: long[]
+    -tiempoObjetivo: long[]
     --
     +fireTransition(t: int): boolean
+    -listaParaDisparar(t: int): boolean
+    -habilitadaPorEstadoYPolitica(t: int): boolean
+    -calcularObjetivo(t: int, habEn: long): long
     -esConflicto(t: int): boolean
 }
 
 ' ── Políticas ───────────────────────────────────────────
 
 class PoliticaBalanceada {
-    -disparosT2: int
-    -disparosT3: int
-    -disparosT6: int
-    -disparosT7: int
+    -c2: int
+    -c3: int
+    -c6: int
+    -c7: int
     --
     +debeDisparar(t: int): boolean
     +registrarDisparo(t: int): void
@@ -100,10 +118,10 @@ class PoliticaBalanceada {
 }
 
 class PoliticaPriorizada {
-    -disparosT2: int
-    -disparosT3: int
-    -disparosT6: int
-    -disparosT7: int
+    -c2: int
+    -c3: int
+    -c6: int
+    -c7: int
     --
     +debeDisparar(t: int): boolean
     +registrarDisparo(t: int): void
@@ -130,29 +148,80 @@ class SegmentoSalida {
     -objetivo: int
     --
     +run(): void
+    ' Instanciado con 1 hilo (H6). Alg. 4.3 prescribe 5 pero T11 es inmediata:
+    ' múltiples hilos se serializan igual que 1. Ver preguntas-respuestas.md §4.
 }
 
 ' ── Observabilidad ──────────────────────────────────────
 
 class Logger {
-    -writer: FileWriter
-    -startTime: Instant
+    -{static} MAX_BACKUPS: int
+    -writer: PrintWriter
+    -startTime: long
+    -violaciones: int
     --
     +registrar(t: int, clienteId: int): void
+    +registrarViolacionBeta(t: int, elapsed: long, beta: long): void
+    +getViolaciones(): int
     +escribirResumen(texto: String): void
     +cerrar(): void
 }
 
 class AnalizadorInvariantes {
-    -rutaLog: String
+    -archivo: String
+    -objetivo: int
     --
+    +calcular(): Resultado
     +analizar(): void
+}
+
+class "AnalizadorInvariantes.Resultado" as Resultado <<inner>> {
+    +total: int
+    +conteos: int[]
+    +incompletos: int
+    +invalidos: int
+    --
+    +superior(): int
+    +inferior(): int
+    +aprobados(): int
+    +cancelados(): int
+    +pctSuperior(): double
+    +pctAprobados(): double
 }
 
 ' ── Punto de entrada ────────────────────────────────────
 
+enum TipoPolitica <<inner Main>> {
+    BALANCEADA
+    PRIORIZADA
+    --
+    {static} parsear(arg: String): TipoPolitica
+}
+
+class "Main.ResultadoEjecucion" as ResultadoEjecucion <<inner>> {
+    +numero: int
+    +politica: TipoPolitica
+    +duracionMs: long
+    +estadisticas: EstadisticasPolitica
+    +analisis: Resultado
+    +archivoLog: String
+    +violacionesBeta: int
+}
+
 class Main {
+    -{static} OBJETIVO: int
+    -{static} DIR_LOGS: String
+    -{static} LOG_BATCH: String
+    -{static} TIEMPOS_DEFAULT: Map<Integer, VentanaTemporal>
+    --
     +{static} main(args: String[]): void
+    -{static} modoInteractivo(): void
+    -{static} modoBatch(arg: String): void
+    -{static} ejecutar(tipo, tiempos, num, total, log): ResultadoEjecucion
+    -{static} iniciarProgreso(contador, num, total, tipo): Thread
+    -{static} mostrarTablaResumen(resultados: List<ResultadoEjecucion>): void
+    -{static} mostrarDetalle(r: ResultadoEjecucion): void
+    -{static} elegirTiempos(sc: Scanner): TiemposTransicion
 }
 
 ' ── Relaciones ──────────────────────────────────────────
@@ -177,9 +246,17 @@ Politica ..> EstadisticasPolitica : "retorna"
 
 Segmento .> MonitorInterface : "usa"
 
-Main ..> Monitor             : "crea"
-Main ..> Segmento            : "crea"
-Main ..> Politica            : "crea"
+AnalizadorInvariantes +-- Resultado
+AnalizadorInvariantes ..> Resultado : "retorna"
+
+Main +-- TipoPolitica
+Main +-- ResultadoEjecucion
+ResultadoEjecucion --> EstadisticasPolitica
+ResultadoEjecucion --> Resultado
+
+Main ..> Monitor              : "crea"
+Main ..> Segmento             : "crea"
+Main ..> Politica             : "crea"
 Main ..> AnalizadorInvariantes : "invoca"
 
 @enduml

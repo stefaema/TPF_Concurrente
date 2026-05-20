@@ -9,7 +9,8 @@ public class Logger {
     private static final int MAX_BACKUPS = 5;
 
     private final PrintWriter writer;
-    private final long startTime;
+    private final long        startTime;
+    private       int         violaciones = 0;
 
     public Logger(String archivo) {
         File dir = new File(archivo).getParentFile();
@@ -35,6 +36,17 @@ public class Logger {
     public void escribirResumen(String texto) {
         writer.println();
         writer.println(texto);
+    }
+
+    /** Registra que la transición t disparó fuera de su ventana β. */
+    public void registrarViolacionBeta(int t, long elapsed, long beta) {
+        violaciones++;
+        writer.printf("[WARN] T%d β superado — elapsed=%dms  beta=%dms  exceso=+%dms%n",
+            t, elapsed, beta, elapsed - beta);
+    }
+
+    public int getViolaciones() {
+        return violaciones;
     }
 
     public void cerrar() {
