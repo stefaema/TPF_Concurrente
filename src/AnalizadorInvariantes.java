@@ -2,9 +2,11 @@ import java.io.BufferedReader;
 import java.io.FileReader;
 import java.io.IOException;
 import java.util.ArrayList;
-import java.util.LinkedHashMap;
+import java.util.Arrays;
+import java.util.HashSet;
+import java.util.Iterator;
 import java.util.List;
-import java.util.Map;
+import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -37,19 +39,33 @@ public class AnalizadorInvariantes {
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // Patrones de los 4 T-invariantes (requisito 12)
+    // Regex unificada de T-invariantes (requisito 12)
     // ─────────────────────────────────────────────────────────────────────────
 
-    private static final Pattern LINEA = Pattern.compile(
-        "\\[\\d{2}:\\d{2}:\\d{2}\\.\\d{3}\\] T(\\d+) \\(cliente=(\\d+)\\)"
-    );
+    // Cada línea del log tiene formato exacto: T<n> (solo eso, sin más texto).
+    // Se usa matches() sobre la línea completa para evitar falsos positivos en la
+    // sección de estadísticas, que contiene subcadenas como "(T2):" o "(T6):".
+    private static final Pattern LINEA = Pattern.compile("T(\\d+)");
 
-    private static final Pattern[] PATRONES = {
-        Pattern.compile("T0 T1 T3 T4 T7 T8 T11"),         // I1: inferior + rechazado
-        Pattern.compile("T0 T1 T3 T4 T6 T9 T10 T11"),     // I2: inferior + aprobado
-        Pattern.compile("T0 T1 T2 T5 T7 T8 T11"),         // I3: superior + rechazado
-        Pattern.compile("T0 T1 T2 T5 T6 T9 T10 T11"),     // I4: superior + aprobado
-    };
+    // Regex única que cubre los 4 T-invariantes mediante alternación.
+    // Se aplica sobre secuencias ya reconstruidas por FIFO (una cadena aislada
+    // por cliente), NO sobre el log crudo intercalado. Aplicarla directamente
+    // sobre el log con wildcards (.*?) produciría "robo": la rama T2 T5 podría
+    // consumir transiciones de un cliente distinto al que abrió el T0.
+    //
+    // Estructura del árbol de la red:
+    //   T0 T1 ──┬── T3 T4 (agente inferior)  ──┬── T7 T8       (cancelado)  → I1
+    //           │                               └── T6 T9 T10  (aprobado)   → I2
+    //           └── T2 T5 (agente superior)   ──┬── T7 T8       (cancelado)  → I3
+    //                                           └── T6 T9 T10  (aprobado)   → I4
+    //           T11
+    private static final Pattern PATRON_INVARIANTES = Pattern.compile(
+        "T0 T1 " +
+        "(?:(?<inferior>T3 T4)|(?<superior>T2 T5))" +
+        " " +
+        "(?:(?<cancelado>T7 T8)|(?<aprobado>T6 T9 T10))" +
+        " T11"
+    );
 
     private static final String[] NOMBRES = {
         "I1 (inferior + rechazado)",
@@ -74,21 +90,21 @@ public class AnalizadorInvariantes {
 
     /** Calcula los conteos sin imprimir nada. */
     public Resultado calcular() {
-        Map<Integer, List<String>> secuencias = agruparPorCliente();
-        int[] conteos    = new int[4];
+        List<List<String>> secuencias = reconstruirSecuencias();
+        int[] conteos     = new int[4];
         int   incompletos = 0;
         int   invalidos   = 0;
 
-        for (List<String> transiciones : secuencias.values()) {
-            String secuencia = String.join(" ", transiciones);
-            int idx = clasificar(secuencia);
-            if (idx >= 0) {
-                conteos[idx]++;
-            } else if (secuencia.endsWith("T11")) {
-                invalidos++;
-            } else {
+        for (List<String> seq : secuencias) {
+            String ultima = seq.get(seq.size() - 1);
+            if (!ultima.equals("T11")) {
                 incompletos++;
+                continue;
             }
+            String cadena = String.join(" ", seq);
+            int idx = clasificar(cadena);
+            if (idx >= 0) conteos[idx]++;
+            else invalidos++;
         }
 
         int total = conteos[0] + conteos[1] + conteos[2] + conteos[3];
@@ -104,29 +120,89 @@ public class AnalizadorInvariantes {
     // Internos
     // ─────────────────────────────────────────────────────────────────────────
 
-    private Map<Integer, List<String>> agruparPorCliente() {
-        Map<Integer, List<String>> mapa = new LinkedHashMap<>();
+    /**
+     * Reconstruye las secuencias por cliente a partir del log plano (sin IDs),
+     * usando semántica FIFO sobre la estructura de la red de Petri.
+     *
+     * El log está serializado por el lock del Monitor, por lo que el orden
+     * de las líneas refleja el orden real de disparo. Cada T0 abre una nueva
+     * secuencia; cada T11 cierra la primera secuencia abierta cuyo último
+     * elemento es T8 o T10 (los únicos predecesores de T11 en la red).
+     *
+     * Las secuencias que no alcanzaron T11 al momento del shutdown quedan
+     * en "pending" y se reportan como incompletas.
+     */
+    private List<List<String>> reconstruirSecuencias() {
+        List<List<String>> pending = new ArrayList<>();
+        List<List<String>> todas   = new ArrayList<>();
+
         try (BufferedReader br = new BufferedReader(new FileReader(archivo))) {
             String linea;
             while ((linea = br.readLine()) != null) {
-                Matcher m = LINEA.matcher(linea);
-                if (!m.find()) continue;
-                int transicion = Integer.parseInt(m.group(1));
-                int clienteId  = Integer.parseInt(m.group(2));
-                mapa.computeIfAbsent(clienteId, k -> new ArrayList<>())
-                    .add("T" + transicion);
+                Matcher m = LINEA.matcher(linea.trim());
+                if (!m.matches()) continue;  // matches() exige que TODA la línea sea T<n>
+                String t = "T" + m.group(1);
+
+                switch (t) {
+                    case "T0" -> {
+                        List<String> nueva = new ArrayList<>();
+                        nueva.add("T0");
+                        pending.add(nueva);
+                    }
+                    case "T1"  -> extender(pending, t, "T0");
+                    case "T2"  -> extender(pending, t, "T1");
+                    case "T3"  -> extender(pending, t, "T1");
+                    case "T4"  -> extender(pending, t, "T3");
+                    case "T5"  -> extender(pending, t, "T2");
+                    case "T6"  -> extender(pending, t, "T4", "T5");
+                    case "T7"  -> extender(pending, t, "T4", "T5");
+                    case "T8"  -> extender(pending, t, "T7");
+                    case "T9"  -> extender(pending, t, "T6");
+                    case "T10" -> extender(pending, t, "T9");
+                    case "T11" -> {
+                        Iterator<List<String>> it = pending.iterator();
+                        while (it.hasNext()) {
+                            List<String> seq = it.next();
+                            String last = seq.get(seq.size() - 1);
+                            if (last.equals("T8") || last.equals("T10")) {
+                                seq.add("T11");
+                                todas.add(seq);
+                                it.remove();
+                                break;
+                            }
+                        }
+                    }
+                }
             }
         } catch (IOException e) {
             System.err.println("Error leyendo log: " + e.getMessage());
         }
-        return mapa;
+
+        // Secuencias que no completaron T11 al shutdown → incompletas
+        todas.addAll(pending);
+        return todas;
+    }
+
+    // Extiende la primera secuencia en pending cuyo último elemento está en expectedLast.
+    private static void extender(List<List<String>> pending, String t, String... expectedLast) {
+        Set<String> expected = new HashSet<>(Arrays.asList(expectedLast));
+        for (List<String> seq : pending) {
+            if (expected.contains(seq.get(seq.size() - 1))) {
+                seq.add(t);
+                return;
+            }
+        }
     }
 
     private int clasificar(String secuencia) {
-        for (int i = 0; i < PATRONES.length; i++) {
-            if (PATRONES[i].matcher(secuencia).matches()) return i;
-        }
-        return -1;
+        Matcher m = PATRON_INVARIANTES.matcher(secuencia);
+        if (!m.matches()) return -1;
+        boolean esInferior = m.group("inferior") != null;
+        boolean esAprobado = m.group("aprobado") != null;
+        if ( esInferior && !esAprobado) return 0;  // I1: inferior + cancelado
+        if ( esInferior &&  esAprobado) return 1;  // I2: inferior + aprobado
+        if (!esInferior && !esAprobado) return 2;  // I3: superior + cancelado
+        return 3;                                   // I4: superior + aprobado
     }
 
     static void imprimirReporte(Resultado r, int objetivo) {

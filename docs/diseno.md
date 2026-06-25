@@ -8,13 +8,12 @@ El sistema sigue una arquitectura en capas con responsabilidades bien separadas:
 ┌──────────────────────────────────────────────────┐
 │                     Main                         │  ← punto de entrada, orquesta todo
 ├──────────────────────────────────────────────────┤
-│         Hilos (6 tipos, 6 instancias: H1–H6)       │  ← ejecutan los segmentos
+│         Hilos (6 tipos, 6 instancias: H1–H6)     │  ← ejecutan los segmentos
 ├──────────────────────────────────────────────────┤
 │   Monitor  ←→  Politica                          │  ← control de concurrencia + decisión
-│   Monitor  ←→  RastreadorClientes                │  ← identidad de tokens
 │   Monitor  ←→  TiemposTransicion                 │  ← configuración de tiempos
 ├──────────────────────────────────────────────────┤
-│   RedPetri                  Cliente              │  ← modelo de la red / objeto de dominio
+│   RedPetri                                       │  ← modelo de la red
 ├──────────────────────────────────────────────────┤
 │   Logger          AnalizadorInvariantes          │  ← observabilidad y verificación
 └──────────────────────────────────────────────────┘
@@ -50,69 +49,6 @@ Los 6 invariantes que verifica, con sus ecuaciones y valores esperados:
 | PI-4 | M(P2) + M(P3) + M(P4) | = 5 |
 | PI-5 | M(P5) + M(P6) | = 1 |
 | PI-6 | M(P7) + M(P8) | = 1 |
-
----
-
-### `Cliente`
-
-Objeto de dominio que representa un token-cliente dentro de la red. Clase de valor inmutable — solo lleva un identificador único asignado en la creación.
-
-```java
-public class Cliente {
-    private final int id;
-
-    public Cliente(int id) {
-        this.id = id;
-    }
-
-    public int getId() {
-        return id;
-    }
-}
-```
-
-Los objetos `Cliente` son creados por `RastreadorClientes` en el momento en que T0 dispara, con IDs secuenciales comenzando en 0. Cada objeto recorre exactamente un T-invariante completo y es descartado cuando T11 dispara — no retorna al sistema. A lo largo de una ejecución completa se crean 186 objetos `Cliente` distintos, con a lo sumo 5 activos simultáneamente: garantía que emerge directamente del marcado inicial de P0 (5 tokens de capacidad).
-
----
-
-### `RastreadorClientes`
-
-Capa de identidad de tokens. Mantiene una `Queue<Cliente>` por cada plaza de flujo activa (P2, P3, P5, P8, P9, P11, P12, P13, P14) y un contador interno de IDs. Asigna identidad a los tokens en el único punto donde nace un cliente (T0) y la libera en el único punto donde muere (T11).
-
-**Modelo de identidad de tokens**
-
-P0 es una plaza de capacidad anónima: sus tokens representan cupos disponibles, no clientes identificados. Esto es consistente con las plazas recurso (P1, P4, P6, P7, P10), que también son anónimas. La identidad comienza en P2 (primer estado activo) y termina en P14 (último estado antes de salir del sistema).
-
-**Tabla de flujo de clientes por transición:**
-
-| Transición | Operación | Detalle |
-|---|---|---|
-| T0  | **Crear**    | `new Cliente(idCounter++)` → encolar en P2 |
-| T1  | Mover        | P2 → P3 |
-| T2  | Mover        | P3 → P5 |
-| T3  | Mover        | P3 → P8 |
-| T4  | Mover        | P8 → P9 |
-| T5  | Mover        | P5 → P9 |
-| T6  | Mover        | P9 → P11 |
-| T7  | Mover        | P9 → P12 |
-| T8  | Mover        | P12 → P14 |
-| T9  | Mover        | P11 → P13 |
-| T10 | Mover        | P13 → P14 |
-| T11 | **Descartar** | Extraer de P14 → retornar para logging → fin de vida del objeto |
-
-**Nota sobre join-points (P9 y P14)**: en estas plazas confluyen tokens de distintos caminos (P9 recibe de T4 y T5; P14 recibe de T8 y T10). Las colas FIFO asignan identidad en orden de llegada, lo que puede resultar en que un cliente que tomó T2/T5 sea asociado a T7 en lugar de T6 (o viceversa). Esto es correcto: cualquier combinación de asignación cliente↔transición post-join produce una secuencia que matchea uno de los 4 T-invariantes válidos. Se trata de una decisión de diseño explícita — la identidad modela la trazabilidad de los tokens, no la historia causal del objeto de dominio.
-
-**Interfaz:**
-```java
-public class RastreadorClientes {
-    private int idCounter = 0;  // dentro del lock del Monitor — no requiere sincronización
-
-    public RastreadorClientes() { ... }
-    public Cliente disparar(int transicion) { ... }
-}
-```
-
-`disparar(t)` ejecuta la operación de la tabla: crea un `Cliente` nuevo (T0), mueve el primero de la cola origen a la cola destino (T1–T10), o extrae de P14 sin reencolar (T11). En todos los casos retorna el `Cliente` afectado para que el `Monitor` lo pase al `Logger`. Se invoca **dentro del lock del Monitor**, garantizando acceso exclusivo sin sincronización adicional.
 
 ---
 
@@ -154,9 +90,11 @@ public interface MonitorInterface {
 
 ### `Monitor` *(implements MonitorInterface)*
 
-**Sabe**: `RedPetri`, `Politica`, `RastreadorClientes`, `TiemposTransicion`, `Logger`.
-**Tiene**: un `ReentrantLock` global + un `Condition` por transición (12 en total).
+**Sabe**: `RedPetri`, `Politica`, `TiemposTransicion`, `Logger`.
+**Tiene**: un `ReentrantLock` global + un `Condition` por transición (12 en total) + `int[] colaEspera` (12 enteros, protegidos por el mismo lock).
 **Hace**: implementa `fireTransition(int t)` — único método público.
+
+`colaEspera[t]` cuenta cuántos hilos están actualmente bloqueados en `await()` esperando disparar la transición `t`. Se incrementa justo antes de cada `await()` y se decrementa en el bloque `finally` del mismo `try`, garantizando conteo correcto incluso si `InterruptedException` propaga hacia el `catch` exterior.
 
 **Constante de conflictos** — las transiciones que participan en un conflicto estructural de la red son fijas y conocidas en diseño. Se declaran como constante privada del Monitor:
 
@@ -176,15 +114,16 @@ Llamar a la política fuera de este conjunto corrompería sus contadores; no lla
 
 Flujo interno de `fireTransition(t)`:
 1. Adquiere el lock.
-2. `while (!listaParaDisparar(t))`: si la transición ya cumple las condiciones estructural y de política pero aún no llegó `tiempoObjetivo[t]`, usa `condiciones[t].awaitUntil(new Date(tiempoObjetivo[t]))` para esperar hasta el instante preciso sin liberar el lock manualmente; en caso contrario usa `condiciones[t].await()`. Un único `catch (InterruptedException)` engloba ambos caminos: restaura el flag de interrupción y retorna `false`; el `finally` garantiza el unlock en todos los casos. (Ver §Semántica temporal para la justificación de `awaitUntil`.)
-3. Si `t` es transición temporal: comprueba si el tiempo transcurrido desde `tiempoHabilitacion[t]` superó `tiempos.getBeta(t)`. Si es así, llama a `logger.registrarViolacionBeta(t, elapsed, beta)` (semántica débil — el disparo no se aborta, solo se registra el exceso).
-4. `red.disparar(t)`.
-5. `Cliente cliente = rastreador.disparar(t)` — mueve el cliente de su plaza origen a su plaza destino y retorna su referencia.
-6. `red.verificarInvariantesPlaza()` (requerimiento 11).
-7. Si `esConflicto(t)` → `politica.registrarDisparo(t)` (actualiza contadores internos de la política).
-8. `logger.registrar(t, cliente.getId())`.
-9. Actualiza relojes y señaliza: para cada transición `i`, si recién habilitada registra `tiempoHabilitacion[i] = ahora` y calcula `tiempoObjetivo[i]`; si deshabilitada limpia el reloj (`tiempoHabilitacion[i] = -1`). Luego, si habilitada, señaliza `condiciones[i].signalAll()`. Esto despierta tanto transiciones recién habilitadas como socios de conflicto que deben re-evaluar la política.
+2. `while (!listaParaDisparar(t))`: si la transición ya cumple las condiciones estructural y de política pero aún no llegó `tiempoObjetivo[t]`, usa `condiciones[t].awaitUntil(new Date(tiempoObjetivo[t]))` para esperar hasta el instante preciso; en caso contrario usa `condiciones[t].await()`. En ambos casos: `colaEspera[t]++` antes del await y `colaEspera[t]--` en el `finally` del try-await. Un único `catch (InterruptedException)` exterior engloba ambos caminos: restaura el flag de interrupción y retorna `false`; el `finally` exterior garantiza el unlock en todos los casos. (Ver §Semántica temporal para la justificación de `awaitUntil`.)
+3. `red.disparar(t)`.
+4. `red.verificarInvariantesPlaza()` (requerimiento 11).
+5. Si `esConflicto(t)` → `politica.registrarDisparo(t)` (actualiza contadores internos de la política).
+6. `logger.registrar(t)`.
+8. **Actualiza relojes** para cada transición `i`: si recién habilitada registra `tiempoHabilitacion[i] = ahora` y calcula `tiempoObjetivo[i] = ahora + alfa`; si deshabilitada limpia el reloj (`tiempoHabilitacion[i] = -1`).
+9. **Señalización dirigida por política**: calcula `sensibilizadas` = {`i` : `red.estaHabilitada(i)`} y `conHilosEsperando` = {`i` : `colaEspera[i] > 0`}. El conjunto `candidatos` = `sensibilizadas ∩ conHilosEsperando` (AND lógico). Luego llama `politica.cualDisparar(candidatos)`, que devuelve **exactamente una transición** mediante el proceso de dos fases descripto en `Politica`, y ejecuta `condiciones[i].signal()` sobre ese único elemento. Cada disparo produce a lo sumo una señal: sin wakeups espurios, sin carrera entre hilos despertados simultáneamente.
 10. Suelta el lock via `finally`. Retorna `true`.
+
+**Transiciones sin hilo en espera** (caso de transiciones consecutivas del mismo segmento): cuando el hilo H3 dispara T2 y T5 pasa a estar habilitada, `colaEspera[5] == 0` porque H3 aún no llamó a `fireTransition(5)`. T5 no entra en `candidatos` y no se emite signal. H3 sale de `fireTransition(2)`, llama inmediatamente a `fireTransition(5)`, adquiere el lock, encuentra T5 habilitada y dispara directamente sin pasar por `await()`. Los P-invariantes garantizan que nadie puede consumir P5 entre medio (PI-5: M(P5)+M(P6)=1, y solo H3 consume P5 vía T5). Mismo análisis para H1 con T0→T1 y H2 con T3→T4.
 
 **Retorna `false` únicamente** cuando el hilo fue interrumpido (señal de shutdown). En condiciones normales siempre retorna `true`.
 
@@ -192,9 +131,11 @@ Flujo interno de `fireTransition(t)`:
 
 **No sabe**: qué hilo lo llama, la semántica del negocio, cuántos invariantes se completaron.
 
-**Decisión de diseño — condiciones por transición**: evita despertar hilos que no pueden avanzar. La condición unificada del `while` (paso 2) garantiza que un hilo vuelve a dormir si la política lo rechaza, sin necesidad de condiciones separadas para bloqueo estructural y bloqueo por política.
+**Decisión de diseño — condiciones por transición**: permite el signal dirigido sin broadcast. La condición unificada del `while` (paso 2) garantiza que un hilo vuelve a dormir si la política lo rechaza al despertar (p.ej. por wakeup espurio o por cambio de estado entre el signal y la re-adquisición del lock), sin necesidad de condiciones separadas para bloqueo estructural y bloqueo por política.
 
-**Por qué no puede haber múltiples hilos apilados en una misma transición de conflicto**: cada transición de conflicto (T2, T3, T6, T7) pertenece a un único segmento con exactamente un hilo asignado. Esta exclusividad emerge directamente del Algoritmo 4.3: el máximo de tokens simultáneos en las plazas de acción de cada segmento es 1, por lo que no se justifica más de un hilo por segmento. Como consecuencia, cuando H3 duerme esperando T2, no existe ningún otro hilo que intente disparar T2 — el lock queda libre y el sistema avanza. H3 se despertará cuando T2 sea habilitada nuevamente (vía señalización del paso 8), re-evaluará la política, y procederá si corresponde.
+**Por qué `signal()` y no `signalAll()`**: cada transición pertenece a exactamente un segmento con un solo hilo asignado (Algoritmo 4.3). Por lo tanto `colaEspera[t] ≤ 1` en todo instante — a lo sumo un hilo espera en `condiciones[t]`. Con exactamente un waiter posible, `signal()` es equivalente a `signalAll()` pero sin costo de despertar hilos que no podrán avanzar.
+
+**Por qué no puede haber múltiples hilos apilados en una misma transición de conflicto**: cada transición de conflicto (T2, T3, T6, T7) pertenece a un único segmento con exactamente un hilo asignado. Como consecuencia, `colaEspera[2]`, `colaEspera[3]`, `colaEspera[6]` y `colaEspera[7]` son siempre 0 o 1 — nunca 2 o más. La política puede elegir con precisión a quién despertar.
 
 ---
 
@@ -240,17 +181,26 @@ public class EstadisticasPolitica {
 public interface Politica {
     boolean debeDisparar(int transicion);
     void registrarDisparo(int transicion);
+    Set<Integer> cualDisparar(Set<Integer> candidatos);
     EstadisticasPolitica getEstadisticas();
 }
 ```
 
-`debeDisparar(t)` es una **consulta pura**: responde si la transición `t` puede disparar según el estado actual de los contadores, sin modificarlos. Se llama dentro del `while` del Monitor, potencialmente múltiples veces por cada disparo real.
+`debeDisparar(t)` es una **consulta pura**: responde si la transición `t` puede disparar según el estado actual de los contadores, sin modificarlos. Se llama dentro del `while` del Monitor como guardia de correctitud: si un hilo es despertado pero la política ya no lo autoriza (por cambio de estado entre el signal y la re-adquisición del lock), el hilo vuelve a `await()`.
 
 `registrarDisparo(t)` **actualiza los contadores** de la política. Se llama una única vez por disparo, después de que `red.disparar(t)` ya ejecutó.
 
+`cualDisparar(candidatos)` recibe el conjunto `candidatos` = `sensibilizadas ∩ conHilosEsperando` calculado por el Monitor. Retorna **exactamente un elemento** (o vacío si `candidatos` está vacío). El proceso se realiza en dos fases:
+
+**Fase 1 — resolución de conflictos**: si las dos transiciones de un par conflictivo ({T2,T3} o {T6,T7}) están en `candidatos`, se elimina la perdedora según la política; la ganadora permanece en el conjunto.
+
+**Fase 2 — elección única**: de los candidatos restantes (sin conflictos sin resolver) se elige exactamente uno al azar (`ThreadLocalRandom`). Los candidatos que llegan a esta fase no comparten recursos entre sí, por lo que no existe criterio de política que justifique preferir uno sobre otro; la elección aleatoria evita sesgos implícitos.
+
+Esta semántica garantiza que cada disparo emite a lo sumo una señal, eliminando wakeups espurios y la competencia entre hilos despertados simultáneamente. Se llama una única vez por disparo, después de actualizar los relojes.
+
 `getEstadisticas()` devuelve un snapshot inmutable de los contadores al momento de la llamada. Se invoca desde `Main` una única vez, después de que todos los hilos terminaron — fuera del lock, sin riesgo de concurrencia.
 
-`debeDisparar` y `registrarDisparo` se invocan **dentro del lock del Monitor**, garantizando que las decisiones son atómicas respecto al marcado y que los contadores no se actualizan concurrentemente.
+Los cuatro métodos se invocan **dentro del lock del Monitor**, garantizando que las decisiones son atómicas respecto al marcado y que los contadores no se actualizan concurrentemente.
 
 Puntos de conflicto donde se aplica:
 
@@ -278,9 +228,19 @@ debeDisparar(tB): c(tB) ≤ c(tA)
 
 #### Comportamiento en empate
 
-Cuando `c(tA) == c(tB)` ambas retornan `true`. El Monitor señaliza ambas condiciones y los dos hilos compiten por el lock. El primero que lo adquiere dispara su transición, rompiendo el empate: el contador del ganador supera al del perdedor, haciendo que `debeDisparar` del ganador retorne `false` en la siguiente evaluación. El perdedor pasa a ser el único habilitado por política.
+Cuando `c(tA) == c(tB)` ambas retornan `true` desde `debeDisparar`. Sin embargo, `cualDisparar` implementa una **elección determinista**: T2 gana sobre T3 (y T6 sobre T7) como desempate. Solo el ganador es señalizado; el otro permanece en `await()` sin ser perturbado.
 
-Este mecanismo de autocorrección garantiza que la diferencia `|c(tA) - c(tB)| ≤ 1` se mantiene en todo momento de la ejecución, sin necesidad de coordinación explícita entre hilos.
+Tras el disparo del ganador, su contador supera al del otro, por lo que en la siguiente evaluación el ganador es bloqueado por `debeDisparar` y la otra transición recibe la señal. Resultado: **alternancia perfecta T2, T3, T2, T3, …** con diferencia constante `|c(tA) - c(tB)| ≤ 1`, sin competencia aleatoria entre hilos.
+
+#### `cualDisparar`
+
+Implementa el contrato de dos fases de la interfaz `Politica`.
+
+**Fase 1 — par T2/T3** (ídem T6/T7):
+- `c2 > c3` → eliminar T2; la rezagada T3 permanece.
+- `c2 ≤ c3` → eliminar T3; incluye empate: T2 gana como desempate determinista.
+
+**Fase 2:** de los candidatos restantes se elige uno al azar (`ThreadLocalRandom`) para señalizar exactamente uno.
 
 #### Prueba de liveness
 
@@ -328,6 +288,14 @@ debeDisparar(T7): (c7 + 1) * 5 ≤ (c6 + c7 + 1) →  T7 se bloquea cuando super
 
 `registrarDisparo(t)`: incrementa `c(t)` en 1.
 
+#### `cualDisparar`
+
+Implementa el contrato de dos fases de la interfaz `Politica`.
+
+**Fase 1:** la propiedad de exclusión mutua de `debeDisparar` (demostrada abajo) garantiza que cuando ambas transiciones del par están en `candidatos`, exactamente una es elegida sin ambigüedad: `if (debeDisparar(tA)) remove(tB); else remove(tA)`. No existe empate en `PoliticaPriorizada`.
+
+**Fase 2:** de los candidatos restantes se elige uno al azar (`ThreadLocalRandom`).
+
 #### Prueba de liveness
 
 Para T2/T3 — ambas no pueden estar simultáneamente bloqueadas:
@@ -335,7 +303,7 @@ Para T2/T3 — ambas no pueden estar simultáneamente bloqueadas:
 - Si T2 bloqueada: `c2+1 > 3*(c3+1)` → `c2 ≥ 3*c3+3` → `(c3+1)*4 = 4*c3+4 ≤ c2+c3+1` → T3 habilitada ✓
 - Si T3 bloqueada: `(c3+1)*4 > c2+c3+1` → `c2 ≤ 3*c3+2` → `c2+1 ≤ 3*(c3+1)` → T2 habilitada ✓
 
-**Propiedad más fuerte**: en todo instante exactamente *una* del par está habilitada — ambas condiciones son mutuamente excluyentes. Esto garantiza que el hilo de la "otra" transición esté en `await()` cuando la primera puede disparar: no hay carrera entre H2 y H3 por el token de P3.
+**Propiedad más fuerte**: en todo instante exactamente *una* del par está habilitada — ambas condiciones son mutuamente excluyentes. Esto garantiza que el hilo de la "otra" transición esté en `await()` cuando la primera puede disparar: no hay carrera entre H2 y H3 por el token de P3. Esta propiedad es la que hace que `cualDisparar` sea determinista para esta política: siempre hay exactamente un candidato a despertar por par de conflicto.
 
 Mismo razonamiento aplica a T6/T7. ∎
 
@@ -492,12 +460,10 @@ class SegmentoSalida extends Segmento {
 
 Recibe disparos del Monitor y los escribe a un archivo de log incluyendo el ID del cliente involucrado.
 
-**Campos:** `PrintWriter writer`, `long startTime` (milisegundos desde epoch, capturado en construcción), `int violaciones` (contador de disparos que superaron su límite β).
+**Campos:** `PrintWriter writer`.
 
 **Interfaz pública:**
-- `registrar(int t, int clienteId)`: escribe una línea de disparo al archivo.
-- `registrarViolacionBeta(int t, long elapsed, long beta)`: incrementa el contador de violaciones y escribe una línea `[WARN]` con la transición, el tiempo transcurrido, el límite β y el exceso en ms.
-- `getViolaciones()`: retorna el número de violaciones β registradas hasta el momento. Se llama desde `Main` tras la ejecución para incluir el conteo en el resumen.
+- `registrar(int t)`: escribe `T<n>` en una línea del archivo de log.
 - `escribirResumen(String texto)`: escribe un bloque de texto libre al final del log (usado por `Main` para el reporte de política).
 - `cerrar()`: flush explícito y cierre del stream.
 
@@ -514,20 +480,25 @@ Recibe disparos del Monitor y los escribe a un archivo de log incluyendo el ID d
 
 Etiquetar la clase como "Thread-safe" sería engañoso: sugeriría que tiene su propio mecanismo de exclusión cuando en realidad delega esa garantía al lock del Monitor.
 
-Formato de cada entrada de disparo:
-```
-[HH:mm:ss.SSS] T<n> (cliente=<id>)
-```
-El timestamp es relativo al inicio del programa (diferencia con `startTime`), lo que lo hace útil para el análisis temporal de la consigna.
+Formato de cada entrada de disparo: una línea `T<n>` por cada transición disparada, en orden de ejecución (serializado por el lock del Monitor). Al finalizar la ejecución se agrega el resumen de política mediante `escribirResumen`.
 
-Ejemplo:
+Ejemplo de log:
 ```
-[00:00:00.123] T0 (cliente=2)
-[00:00:00.131] T0 (cliente=4)
-[00:00:00.145] T1 (cliente=2)
-[00:00:00.152] T3 (cliente=2)
-[00:00:00.160] T1 (cliente=4)
-[00:00:00.167] T2 (cliente=4)
+T0
+T1
+T0
+T3
+T1
+T2
+T4
+T5
+T7
+T6
+T8
+T9
+T10
+T11
+T11
 ```
 
 ---
@@ -548,7 +519,7 @@ Ejemplo:
 
 **`enum TipoPolitica`**: centraliza los valores válidos (`BALANCEADA`, `PRIORIZADA`) y encapsula el parseo desde string mediante `parsear(String arg)`. Garantiza que agregar una tercera política solo requiere un nuevo valor en el enum y un caso en el `switch` — sin lógica de strings dispersa.
 
-**`ResultadoEjecucion`** (inner class): transporta los resultados de una ejecución completada: número de ejecución, política usada, duración en ms, `EstadisticasPolitica` (contadores internos de la política), `AnalizadorInvariantes.Resultado` (conteos de T-invariantes) y `violacionesBeta` (número de disparos que superaron su límite β). Permite mostrar la tabla resumen y el drill-down sin re-procesar los logs.
+**`ResultadoEjecucion`** (inner class): transporta los resultados de una ejecución completada: número de ejecución, política usada, duración en ms, `EstadisticasPolitica` (contadores internos de la política), `AnalizadorInvariantes.Resultado` (conteos de T-invariantes) y la ruta del log. Permite mostrar la tabla resumen y el drill-down sin re-procesar los logs.
 
 #### Barra de progreso
 
@@ -581,8 +552,7 @@ Tiempos por defecto:
 RedPetri  red      = new RedPetri();
 Logger    logger   = new Logger(archivoLog);   // crea directorio, rota log anterior
 Politica  politica = switch (tipo) { ... };
-RastreadorClientes rastreador = new RastreadorClientes();
-Monitor   monitor  = new Monitor(red, politica, rastreador, tiempos, logger);
+Monitor   monitor  = new Monitor(red, politica, tiempos, logger);
 AtomicInteger contador = new AtomicInteger(0);
 
 // H1–H5: pipeline, terminación por interrupción externa
@@ -609,11 +579,10 @@ for (Thread t : hilosIntermedios) t.join();
 
 // Cerrar log, calcular resultado y retornar
 logger.escribirResumen(politica.getEstadisticas().formatear());
-int violaciones = logger.getViolaciones();
 logger.cerrar();
 AnalizadorInvariantes.Resultado analisis =
     new AnalizadorInvariantes(archivoLog, OBJETIVO).calcular();
-return new ResultadoEjecucion(num, tipo, duracion, politica.getEstadisticas(), analisis, archivoLog, violaciones);
+return new ResultadoEjecucion(num, tipo, duracion, politica.getEstadisticas(), analisis, archivoLog);
 ```
 
 Los logs van a `logs/ejecucion-N-<politica>.txt` en modo interactivo y a `logs/log.txt` en modo batch.
@@ -622,33 +591,35 @@ Los logs van a `logs/ejecucion-N-<politica>.txt` en modo interactivo y a `logs/l
 
 ## Semántica temporal
 
-Las transiciones {T1, T4, T5, T8, T9, T10} son **temporizadas** según la semántica de Redes de Petri Temporizadas (Time Petri Nets, Merlin 1974). Cada transición temporizada tiene asociada una **ventana de disparo `[alfa, beta]` ms** que se mide desde el momento en que la transición **se habilita** — no desde que el hilo decide dispararla.
+Las transiciones {T1, T4, T5, T8, T9, T10} son **temporizadas** según la semántica débil de Redes de Petri Temporizadas (Time Petri Nets, Merlin 1974). Cada transición temporizada tiene asociado un **tiempo mínimo alfa (EFT — Earliest Firing Time)** medido desde el momento en que la transición **se habilita**.
 
-### Ventana de disparo `[alfa, beta]`
+### Semántica débil con β = ∞
+
+La implementación usa la semántica de tiempo débil con límite superior infinito:
 
 | Parámetro | Significado |
 |-----------|-------------|
-| `alfa` (EFT — Earliest Firing Time) | La transición **no puede** disparar antes de que transcurran `alfa` ms desde su habilitación |
-| `beta` (LFT — Latest Firing Time)  | La transición **debería** disparar antes de que transcurran `beta` ms (semántica débil: se registra pero no se aborta si se excede por scheduling del SO) |
+| `alfa` (EFT) | La transición **no puede** disparar antes de que transcurran `alfa` ms desde su habilitación |
+| β = ∞ | No existe límite superior de tiempo; la transición dispara en cuanto `alfa` transcurre |
+
+La transición dispara **exactamente** cuando `alfa` ms han transcurrido desde su habilitación. No existe aleatoriedad ni violación de límite superior.
 
 ### Reloj de habilitación
 
 El `Monitor` mantiene dos arreglos internos por transición:
 
 - `tiempoHabilitacion[t]`: instante en que la transición fue habilitada por última vez (−1 si no está habilitada actualmente). Se registra en el constructor para las transiciones habilitadas en el marcado inicial y se actualiza tras cada disparo.
-- `tiempoObjetivo[t]`: instante objetivo de disparo, calculado cuando la transición se habilita como un valor aleatorio dentro de la ventana:
+- `tiempoObjetivo[t]`: instante objetivo de disparo, calculado cuando la transición se habilita:
 
 ```
-tiempoObjetivo[t] = tiempoHabilitacion[t] + alfa + random(0, beta − alfa)
+tiempoObjetivo[t] = tiempoHabilitacion[t] + alfa
 ```
-
-Si `alfa == beta`, el disparo es determinista exactamente en `alfa`. La aleatorización dentro de la ventana modela que el proceso no siempre tarda el mínimo posible — aporta variabilidad real para el análisis temporal.
 
 **Reset del reloj**: si una transición se deshabilita (otra transición consumió alguno de sus tokens de entrada) y luego se re-habilita, `tiempoHabilitacion[t]` se reinicia al nuevo instante de habilitación y `tiempoObjetivo[t]` se recalcula.
 
 ### Implementación — `Condition.awaitUntil`
 
-La espera temporal se implementa dentro del marco de sincronización del Monitor usando `Condition.awaitUntil(Date)`, que **libera el lock atomicamente y espera hasta la fecha objetivo o hasta recibir un signal**:
+La espera temporal se implementa dentro del marco de sincronización del Monitor usando `Condition.awaitUntil(Date)`, que **libera el lock atómicamente y espera hasta la fecha objetivo o hasta recibir un signal**:
 
 ```java
 // En fireTransition(t):
@@ -656,10 +627,11 @@ lock.lock();
 try {
     while (!listaParaDisparar(t)) {
         if (tiempos.esTemporal(t) && habilitadaPorEstadoYPolitica(t)) {
-            // Estructuralmente lista y política OK, pero ventana aún no alcanzada.
+            // Estructuralmente lista y política OK, pero alfa aún no transcurrió.
             // awaitUntil libera el lock — los otros hilos pueden progresar.
             condiciones[t].awaitUntil(new Date(tiempoObjetivo[t]));
         } else {
+            // Espera estructural o de política: necesita señal externa.
             condiciones[t].await();
         }
     }
@@ -675,9 +647,11 @@ try {
 Donde `listaParaDisparar(t)` verifica las tres condiciones simultáneamente:
 1. `red.estaHabilitada(t)` — condición estructural
 2. `!esConflicto(t) || politica.debeDisparar(t)` — condición de política
-3. `!tiempos.esTemporal(t) || now >= tiempoObjetivo[t]` — condición temporal
+3. `!tiempos.esTemporal(t) || now >= tiempoObjetivo[t]` — condición temporal (solo alfa; β = ∞)
 
-**Por qué `awaitUntil` es equivalente a sleep-fuera-del-lock**: `Condition.awaitUntil` libera el lock internamente (igual que `await`), lo que permite que los otros 5 hilos progresen durante la espera. El comportamiento de concurrencia es idéntico al patrón unlock/sleep/lock, pero la implementación es más limpia: no se necesita la variable `lockHeld`, no hay doble bloque `try/catch`, y un único `finally` garantiza el unlock.
+Si una transición de conflicto es rechazada por la política, el hilo duerme con `await()` (no `awaitUntil`) porque no hay un timer definido para cuándo la política cambiará — depende de que otra transición dispare y modifique los contadores. `awaitUntil` solo aplica cuando el único freno pendiente es el tiempo (alfa no transcurrido).
+
+**Por qué `awaitUntil` es equivalente a sleep-fuera-del-lock**: `Condition.awaitUntil` libera el lock internamente (igual que `await`), lo que permite que los otros hilos progresen durante la espera. El comportamiento de concurrencia es idéntico al patrón unlock/sleep/lock, y un único `finally` garantiza el unlock en todos los casos.
 
 ### Condición unificada de espera
 
@@ -685,14 +659,15 @@ La fusión de las tres condiciones en un único `while` con `awaitUntil` o `awai
 
 ### Semántica modelada
 
-La transición produce sus tokens de salida cuando **dispara** (al alcanzar `tiempoObjetivo`), no cuando se habilita. Esto es coherente con la semántica formal de TPN: el marcado se actualiza al completarse el disparo. El período `[habilitación, tiempoObjetivo]` representa que el proceso está en curso — el cliente está siendo atendido, realizando el pago, etc. — pero todavía no completó esa etapa.
+La transición produce sus tokens de salida cuando **dispara** (al alcanzar `tiempoObjetivo = habilitación + alfa`), no cuando se habilita. Esto es coherente con la semántica formal de TPN: el marcado se actualiza al completarse el disparo. El período `[habilitación, tiempoObjetivo]` representa que el proceso está en curso — el cliente está siendo atendido, realizando el pago, etc. — pero todavía no completó esa etapa.
 
 ### Clase `TiemposTransicion`
 
 ```java
 public class TiemposTransicion {
 
-    public record VentanaTemporal(long alfa, long beta) { ... }
+    // β = ∞: solo se almacena alfa (EFT).
+    public record VentanaTemporal(long alfa) { ... }
 
     private final Map<Integer, VentanaTemporal> ventanas;
 
@@ -702,22 +677,21 @@ public class TiemposTransicion {
 
     public boolean esTemporal(int t)  { return ventanas.containsKey(t); }
     public long    getAlfa(int t)     { return ventanas.get(t).alfa(); }
-    public long    getBeta(int t)     { return ventanas.get(t).beta(); }
 }
 ```
 
-Las transiciones no presentes en el mapa (T0, T2, T3, T6, T7, T11) son **inmediatas**: disparan sin condición temporal. `Main` construye la instancia con las ventanas del experimento en curso y la pasa al Monitor.
+Las transiciones no presentes en el mapa (T0, T2, T3, T6, T7, T11) son **inmediatas**: disparan sin condición temporal. `Main` construye la instancia con los alfas del experimento en curso y la pasa al Monitor.
 
-### Ventanas por defecto
+### Tiempos por defecto
 
-| Transición | Acción | alfa (ms) | beta (ms) |
-|---|---|---|---|
-| T1  | Ingreso a sala de espera     |  80 | 120 |
-| T4  | Atención agente inferior     | 150 | 250 |
-| T5  | Atención agente superior     | 150 | 250 |
-| T8  | Procesamiento de cancelación |  50 | 150 |
-| T9  | Procesamiento de confirmación| 100 | 200 |
-| T10 | Procesamiento de pago        | 100 | 200 |
+| Transición | Acción | alfa (ms) |
+|---|---|---|
+| T1  | Ingreso a sala de espera     | 100 |
+| T4  | Atención agente inferior     | 200 |
+| T5  | Atención agente superior     | 200 |
+| T8  | Procesamiento de cancelación | 100 |
+| T9  | Procesamiento de confirmación| 150 |
+| T10 | Procesamiento de pago        | 150 |
 
 ---
 
@@ -727,30 +701,35 @@ La verificación se realiza mediante la clase `AnalizadorInvariantes`, que proce
 
 ### Proceso de análisis
 
-Como cada `Cliente` tiene un ID único por ciclo, la estructura del log es 1:1 con los T-invariantes: cada ID aparece en exactamente una secuencia (completa o incompleta en caso de shutdown).
+El log es una secuencia plana de disparos (una línea `T<n>` por transición) en el orden exacto en que ocurrieron, ya que el lock del Monitor serializa todas las escrituras. Las transiciones de distintos clientes aparecen intercaladas.
 
-**Paso 1 — Agrupación por ID**: el analizador recorre el log y agrupa las transiciones por `(cliente=<id>)`. El resultado son hasta 186 secuencias, una por ID:
+**Paso 1 — Reconstrucción FIFO**: el analizador reconstruye las secuencias por cliente usando la estructura de la red de Petri. Para cada transición leída, se busca la primera secuencia en curso cuyo último elemento sea el predecesor correcto según la red (semántica FIFO). T0 abre una nueva secuencia; T11 cierra la primera que puede recibirlo (la que termina en T8 o T10). Este algoritmo es correcto porque el log está serializado: el orden de las líneas refleja el orden real de disparo, que a su vez refleja el flujo de tokens en la red.
+
+El resultado son hasta 186 secuencias reconstruidas, cada una con las transiciones de un cliente en su orden real:
 
 ```
-cliente=0:   T0 T1 T3 T4 T7 T8 T11
-cliente=1:   T0 T1 T2 T5 T6 T9 T10 T11
-cliente=2:   T0 T1 T3 T4 T6 T9 T10 T11
+[T0, T1, T3, T4, T7, T8, T11]
+[T0, T1, T2, T5, T6, T9, T10, T11]
+[T0, T1, T3, T4, T6, T9, T10, T11]
 ...
-cliente=185: T0 T1 T2 T5 T7 T8 T11
+[T0, T1, T2, T5, T7, T8, T11]
 ```
 
-Cada secuencia no tiene interleaving — las transiciones aparecen en el orden real en que ese cliente las atravesó.
+**Paso 2 — Clasificación por regex**: cada secuencia reconstruida se une en un string (`String.join(" ", seq)`) y se compara contra una **única regex** que expresa los 4 T-invariantes mediante alternación y grupos nombrados:
 
-**Paso 2 — Clasificación por regex**: cada secuencia se compara directamente contra los 4 patrones exactos (sin `.*`, sin segmentación interna):
+```
+T0 T1 (?:(?<inferior>T3 T4)|(?<superior>T2 T5)) (?:(?<cancelado>T7 T8)|(?<aprobado>T6 T9 T10)) T11
+```
 
-| T-invariante | Regex exacta |
-|---|---|
-| I1 | `T0 T1 T3 T4 T7 T8 T11` |
-| I2 | `T0 T1 T3 T4 T6 T9 T10 T11` |
-| I3 | `T0 T1 T2 T5 T7 T8 T11` |
-| I4 | `T0 T1 T2 T5 T6 T9 T10 T11` |
+El árbol de la regex refleja directamente los dos puntos de conflicto de la red:
+- **Conflicto 1** (agente): rama `inferior` (T3 T4) vs rama `superior` (T2 T5)
+- **Conflicto 2** (decisión): rama `cancelado` (T7 T8) vs rama `aprobado` (T6 T9 T10)
 
-Cada ID es ya un ciclo atómico: no hay segmentación por T11 ni ambigüedad de cross-client matching. Una secuencia que no matchea ningún patrón indica un bug en la implementación.
+Los grupos nombrados `inferior` y `aprobado` identifican qué combinación matcheó, clasificando la secuencia en I1–I4 sin iterar sobre patrones separados.
+
+**Por qué no aplicar la regex directamente al log crudo**: si se usaran wildcards (`.*?`) sobre el log intercalado, la rama `T2 T5` podría "robar" un T2 de un cliente distinto al que abrió el T0, produciendo un match inválido. La reconstrucción FIFO previa garantiza que la regex opera sobre cadenas aisladas sin riesgo de contaminación entre clientes.
+
+Una secuencia que no matchea ninguna rama indica un bug en la implementación.
 
 **Paso 3 — Verificación**: se comprueba que el total de secuencias clasificadas sea exactamente 186 y que la distribución entre I1/I2/I3/I4 sea consistente con la política ejecutada.
 
@@ -811,20 +790,18 @@ Invariantes completados : 186 / 186  [OK]
 |---|---|---|
 | `ViolacionInvarianteException` | Excepción (RuntimeException) | Señaliza bug en la red: invariante de plaza violado post-disparo |
 | `MonitorInterface` | Interface | Contrato público del monitor |
-| `Politica` | Interface | Contrato de las políticas de conflicto |
+| `Politica` | Interface | Contrato de las políticas: `debeDisparar` (guardia while), `registrarDisparo`, `cualDisparar` (dos fases: resuelve conflictos + elige uno; retorna siempre ≤ 1 elemento), `getEstadisticas` |
 | `RedPetri` | Clase | Modelo de la red (marcado, matrices, invariantes); expone copia defensiva del marcado |
-| `Cliente` | Clase | Objeto de dominio — token con identidad |
-| `RastreadorClientes` | Clase | Identidad de tokens durante el flujo de la red |
-| `Monitor` | Clase | Control de concurrencia, único acceso al marcado |
+| `Monitor` | Clase | Control de concurrencia, único acceso al marcado; `colaEspera[]` + señalización dirigida por `Politica.cualDisparar` |
 | `EstadisticasPolitica` | Clase (valor inmutable) | Snapshot de contadores de política; sabe formatearse como String |
 | `PoliticaBalanceada` | Clase | Política 50/50 en ambos conflictos |
 | `PoliticaPriorizada` | Clase | Política 75%/80% en los conflictos |
 | `Segmento` | Clase abstracta | Contrato base de todos los hilos de la red (campo `monitor` compartido) |
 | `SegmentoIntermedio` | Clase | Hilos H1–H5: pipeline, loop infinito, terminación por interrupción |
 | `SegmentoSalida` | Clase | Hilo H6: exit handler, auto-terminación tras 186 disparos de T11 (1 hilo; T11 es inmediata) |
-| `TiemposTransicion` | Clase | Ventanas temporales `[alfa, beta]` de transiciones temporizadas; record `VentanaTemporal` |
-| `Logger` | Clase | Registro de disparos con ID de cliente; detección y log de violaciones β; rotación de logs (MAX_BACKUPS=5); shutdown hook |
-| `AnalizadorInvariantes` | Clase | Verificación post-ejecución de T-invariantes por regex |
+| `TiemposTransicion` | Clase | Tiempo mínimo `alfa` (β = ∞) de transiciones temporizadas; record `VentanaTemporal` |
+| `Logger` | Clase | Registro de disparos (`T<n>` por línea); rotación de logs (MAX_BACKUPS=5); shutdown hook |
+| `AnalizadorInvariantes` | Clase | Verificación post-ejecución de T-invariantes por regex; reconstruye secuencias por FIFO sobre la estructura de la red |
 | `AnalizadorInvariantes.Resultado` | Clase interna estática | Transporta conteos y métricas del análisis sin acoplarse a la presentación |
 | `TipoPolitica` | Enum interno (Main) | Valores válidos de política y parseo desde argumento de línea de comandos |
 | `Main.ResultadoEjecucion` | Clase interna (Main) | Resultados de una ejecución: duración, estadísticas de política, análisis de invariantes |

@@ -16,8 +16,17 @@ interface MonitorInterface {
 interface Politica {
     +debeDisparar(t: int): boolean
     +registrarDisparo(t: int): void
+    +cualDisparar(candidatos: Set<Integer>): Set<Integer>
     +getEstadisticas(): EstadisticasPolitica
 }
+
+note right of Politica
+  <b>cualDisparar</b> — contrato: |retorno| ≤ 1
+  Fase 1: resuelve pares conflictivos
+  {T2/T3} y {T6/T7} → un ganador c/u
+  Fase 2: elige al azar (ThreadLocalRandom)
+  entre candidatos restantes
+end note
 
 ' ── Modelo de la red ────────────────────────────────────
 
@@ -36,26 +45,10 @@ class ViolacionInvarianteException <<RuntimeException>> {
     +ViolacionInvarianteException(invariante: String, marcado: int[])
 }
 
-' ── Identidad de tokens ─────────────────────────────────
-
-class Cliente {
-    -id: int
-    --
-    +getId(): int
-}
-
-class RastreadorClientes {
-    -idCounter: int
-    -colas: Queue<Cliente>[]
-    --
-    +disparar(t: int): Cliente
-}
-
 ' ── Configuración temporal ──────────────────────────────
 
 class VentanaTemporal <<record>> {
     +alfa: long
-    +beta: long
 }
 
 class TiemposTransicion {
@@ -63,7 +56,6 @@ class TiemposTransicion {
     --
     +esTemporal(t: int): boolean
     +getAlfa(t: int): long
-    +getBeta(t: int): long
 }
 
 TiemposTransicion +-- VentanaTemporal
@@ -88,11 +80,11 @@ class EstadisticasPolitica {
 class Monitor {
     -red: RedPetri
     -politica: Politica
-    -rastreador: RastreadorClientes
     -tiempos: TiemposTransicion
     -logger: Logger
     -lock: ReentrantLock
     -condiciones: Condition[]
+    -colaEspera: int[]
     -{static} TRANSICIONES_CONFLICTO: Set<Integer>
     -tiempoHabilitacion: long[]
     -tiempoObjetivo: long[]
@@ -114,6 +106,7 @@ class PoliticaBalanceada {
     --
     +debeDisparar(t: int): boolean
     +registrarDisparo(t: int): void
+    +cualDisparar(candidatos: Set<Integer>): Set<Integer>
     +getEstadisticas(): EstadisticasPolitica
 }
 
@@ -125,6 +118,7 @@ class PoliticaPriorizada {
     --
     +debeDisparar(t: int): boolean
     +registrarDisparo(t: int): void
+    +cualDisparar(candidatos: Set<Integer>): Set<Integer>
     +getEstadisticas(): EstadisticasPolitica
 }
 
@@ -148,8 +142,6 @@ class SegmentoSalida {
     -objetivo: int
     --
     +run(): void
-    ' Instanciado con 1 hilo (H6). Alg. 4.3 prescribe 5 pero T11 es inmediata:
-    ' múltiples hilos se serializan igual que 1. Ver preguntas-respuestas.md §4.
 }
 
 ' ── Observabilidad ──────────────────────────────────────
@@ -157,12 +149,8 @@ class SegmentoSalida {
 class Logger {
     -{static} MAX_BACKUPS: int
     -writer: PrintWriter
-    -startTime: long
-    -violaciones: int
     --
-    +registrar(t: int, clienteId: int): void
-    +registrarViolacionBeta(t: int, elapsed: long, beta: long): void
-    +getViolaciones(): int
+    +registrar(t: int): void
     +escribirResumen(texto: String): void
     +cerrar(): void
 }
@@ -173,6 +161,9 @@ class AnalizadorInvariantes {
     --
     +calcular(): Resultado
     +analizar(): void
+    -reconstruirSecuencias(): List<List<String>>
+    -extender(pending, t, expectedLast): void
+    -clasificar(secuencia: String): int
 }
 
 class "AnalizadorInvariantes.Resultado" as Resultado <<inner>> {
@@ -205,7 +196,6 @@ class "Main.ResultadoEjecucion" as ResultadoEjecucion <<inner>> {
     +estadisticas: EstadisticasPolitica
     +analisis: Resultado
     +archivoLog: String
-    +violacionesBeta: int
 }
 
 class Main {
@@ -233,14 +223,11 @@ Segmento         <|--  SegmentoIntermedio
 Segmento         <|--  SegmentoSalida
 
 Monitor *-- RedPetri
-Monitor *-- RastreadorClientes
 Monitor *-- TiemposTransicion
 Monitor *-- Logger
 Monitor o-- Politica
 
 RedPetri ..> ViolacionInvarianteException : "lanza"
-
-RastreadorClientes *-- Cliente
 
 Politica ..> EstadisticasPolitica : "retorna"
 
