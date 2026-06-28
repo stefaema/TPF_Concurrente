@@ -1,0 +1,745 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Flashcards — Concurrencia</title>
+  <style>
+    :root {
+      --bg:          #0f172a;
+      --bg-card:     #1e293b;
+      --bg-sidebar:  #1a2538;
+      --text:        #e2e8f0;
+      --text-muted:  #94a3b8;
+      --border:      #2d3f55;
+      --primary:     #6366f1;
+      --primary-h:   #4f46e5;
+      --success:     #10b981;
+      --warn:        #f59e0b;
+      --danger:      #ef4444;
+      --radius:      12px;
+    }
+    [data-theme="light"] {
+      --bg:         #f1f5f9;
+      --bg-card:    #ffffff;
+      --bg-sidebar: #e8eef7;
+      --text:       #0f172a;
+      --text-muted: #64748b;
+      --border:     #cbd5e1;
+    }
+
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      height: 100vh;
+      display: grid;
+      grid-template-rows: 52px 1fr;
+      grid-template-columns: 270px 1fr;
+      grid-template-areas:
+        "hdr hdr"
+        "sb  main";
+      overflow: hidden;
+    }
+
+    /* ── Header ─────────────────────────────── */
+    header {
+      grid-area: hdr;
+      background: var(--bg-card);
+      border-bottom: 1px solid var(--border);
+      padding: 0 20px;
+      display: flex;
+      align-items: center;
+      gap: 14px;
+    }
+    header h1 { font-size: 1.1rem; font-weight: 700; white-space: nowrap; }
+    .hdr-spacer { flex: 1; }
+    #filter-summary { font-size: 0.8rem; color: var(--text-muted); }
+    #theme-btn {
+      background: transparent;
+      border: 1px solid var(--border);
+      color: var(--text-muted);
+      padding: 4px 10px;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 0.8rem;
+      transition: border-color .15s, color .15s;
+    }
+    #theme-btn:hover { border-color: var(--primary); color: var(--text); }
+
+    /* ── Sidebar ─────────────────────────────── */
+    .sidebar {
+      grid-area: sb;
+      background: var(--bg-sidebar);
+      border-right: 1px solid var(--border);
+      overflow-y: auto;
+      padding: 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+    .sidebar::-webkit-scrollbar { width: 5px; }
+    .sidebar::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+    .fsec h3 {
+      font-size: 0.65rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: .12em;
+      color: var(--text-muted);
+      margin-bottom: 8px;
+    }
+
+    /* Chip group */
+    .chips { display: flex; flex-wrap: wrap; gap: 5px; }
+    .chip {
+      display: inline-flex; align-items: center; gap: 4px;
+      padding: 3px 9px;
+      border-radius: 20px;
+      border: 1px solid var(--border);
+      background: transparent;
+      color: var(--text-muted);
+      font-size: 0.72rem;
+      cursor: pointer;
+      transition: all .13s;
+    }
+    .chip:hover { border-color: var(--primary); color: var(--text); }
+    .chip.on { border-color: var(--primary); background: var(--primary); color: #fff; }
+
+    /* Toggle row */
+    .trow { display: flex; gap: 5px; }
+    .tbtn {
+      flex: 1; padding: 6px 4px;
+      border: 1px solid var(--border);
+      background: transparent; color: var(--text-muted);
+      font-size: 0.75rem; border-radius: 7px; cursor: pointer;
+      transition: all .13s; text-align: center;
+    }
+    .tbtn:hover { border-color: var(--primary); color: var(--text); }
+    .tbtn.on { background: var(--primary); border-color: var(--primary); color: #fff; }
+    .tbtn.d-baja.on  { background: #10b981; border-color: #10b981; }
+    .tbtn.d-media.on { background: #f59e0b; border-color: #f59e0b; }
+    .tbtn.d-alta.on  { background: #ef4444; border-color: #ef4444; }
+
+    /* Checkbox items */
+    .cbi {
+      display: flex; align-items: center; gap: 7px;
+      font-size: 0.82rem; cursor: pointer; padding: 3px 0;
+      user-select: none;
+    }
+    .cbi input { width: 14px; height: 14px; cursor: pointer; accent-color: var(--primary); }
+
+    /* Mode buttons */
+    .mbtn {
+      flex: 1; padding: 8px 6px;
+      border: 1px solid var(--border);
+      background: transparent; color: var(--text-muted);
+      font-size: 0.82rem; border-radius: 8px; cursor: pointer;
+      transition: all .13s; text-align: center;
+    }
+    .mbtn:hover { border-color: var(--primary); color: var(--text); }
+    .mbtn.on { background: var(--primary); border-color: var(--primary); color: #fff; }
+
+    /* Session stats grid */
+    .sgrid {
+      display: grid; grid-template-columns: 1fr 1fr; gap: 6px;
+    }
+    .sbox {
+      background: var(--bg);
+      border-radius: 8px;
+      padding: 7px 8px;
+      text-align: center;
+    }
+    .sbox .v { font-size: 1.35rem; font-weight: 700; line-height: 1; }
+    .sbox .l { font-size: 0.62rem; color: var(--text-muted); margin-top: 2px; }
+    .sbox.bien .v    { color: #10b981; }
+    .sbox.regular .v { color: #f59e0b; }
+    .sbox.mal .v     { color: #ef4444; }
+
+    .sbtn {
+      width: 100%; padding: 8px;
+      border: 1px solid var(--border);
+      background: transparent; color: var(--text-muted);
+      font-size: 0.78rem; border-radius: 8px; cursor: pointer;
+      transition: all .13s;
+    }
+    .sbtn:hover:not(:disabled) { border-color: var(--primary); color: var(--text); }
+    .sbtn:disabled { opacity: .35; cursor: not-allowed; }
+    .sbtn.danger:hover:not(:disabled) { border-color: var(--danger); color: var(--danger); }
+
+    /* ── Main area ─────────────────────────────── */
+    main {
+      grid-area: main;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 20px 28px;
+      gap: 14px;
+      overflow: hidden;
+    }
+
+    .prow {
+      width: 100%; max-width: 740px;
+      display: flex; align-items: center; gap: 12px;
+    }
+    .pbar {
+      flex: 1; height: 5px;
+      background: var(--border); border-radius: 3px; overflow: hidden;
+    }
+    .pfill {
+      height: 100%;
+      background: var(--primary);
+      border-radius: 3px;
+      transition: width .3s ease;
+    }
+    .pctr {
+      font-size: 0.8rem; color: var(--text-muted);
+      white-space: nowrap; min-width: 56px; text-align: right;
+    }
+
+    /* Card flip */
+    .scene {
+      width: 100%; max-width: 740px;
+      height: 340px;
+      perspective: 1100px;
+      cursor: pointer;
+    }
+    .card {
+      width: 100%; height: 100%;
+      position: relative;
+      transform-style: preserve-3d;
+      transition: transform .48s cubic-bezier(.4,0,.2,1);
+    }
+    .card.flipped { transform: rotateY(180deg); }
+
+    .face {
+      position: absolute; inset: 0;
+      backface-visibility: hidden;
+      -webkit-backface-visibility: hidden;
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 20px 24px;
+      display: flex; flex-direction: column; gap: 10px;
+      overflow: hidden;
+    }
+    .face-back { transform: rotateY(180deg); }
+
+    .cmeta {
+      display: flex; align-items: center;
+      gap: 7px; flex-wrap: wrap;
+    }
+    .badge {
+      padding: 2px 9px; border-radius: 20px;
+      font-size: 0.68rem; font-weight: 700;
+      text-transform: uppercase; letter-spacing: .04em;
+    }
+    .b-trampa { background: #ef4444; color: #fff; }
+    .b-d-baja  { background: #10b98120; color: #10b981; border: 1px solid #10b98140; }
+    .b-d-media { background: #f59e0b20; color: #f59e0b; border: 1px solid #f59e0b40; }
+    .b-d-alta  { background: #ef444420; color: #ef4444; border: 1px solid #ef444440; }
+    .b-prio { color: var(--text-muted); font-size: .75rem; letter-spacing: .02em; }
+    .b-rating { margin-left: auto; font-size: .95rem; }
+
+    .subtema {
+      font-size: 0.75rem; color: var(--text-muted);
+      font-style: italic; text-transform: capitalize;
+    }
+    .pregunta {
+      flex: 1; font-size: 1.05rem; line-height: 1.65;
+      display: flex; align-items: center;
+    }
+    .respuesta {
+      flex: 1; font-size: 0.92rem; line-height: 1.65;
+      overflow-y: auto;
+    }
+    .respuesta::-webkit-scrollbar { width: 5px; }
+    .respuesta::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+    .flip-hint {
+      text-align: center; font-size: 0.72rem;
+      color: var(--text-muted); margin-top: auto;
+    }
+    .ctags {
+      display: flex; flex-wrap: wrap; gap: 4px; margin-top: auto;
+    }
+    .tag {
+      padding: 2px 7px;
+      background: var(--bg); border-radius: 4px;
+      font-size: 0.63rem; color: var(--text-muted);
+    }
+    .cfuente {
+      font-size: 0.68rem; color: var(--text-muted);
+      font-style: italic; margin-top: 2px;
+    }
+
+    /* Controls */
+    .ctrl {
+      display: flex; align-items: center;
+      gap: 10px; width: 100%; max-width: 740px;
+      justify-content: center; flex-wrap: wrap;
+    }
+    .btn {
+      padding: 9px 20px;
+      border: 1px solid var(--border);
+      background: var(--bg-card); color: var(--text);
+      font-size: 0.88rem; border-radius: 8px;
+      cursor: pointer; transition: all .13s;
+    }
+    .btn:hover:not(:disabled) { border-color: var(--primary); color: var(--primary); }
+    .btn:disabled { opacity: .3; cursor: not-allowed; }
+    .btn-flip {
+      background: var(--primary); border-color: var(--primary);
+      color: #fff; padding: 9px 28px;
+    }
+    .btn-flip:hover:not(:disabled) { background: var(--primary-h); color: #fff; border-color: var(--primary-h); }
+
+    .rg { display: flex; gap: 8px; }
+    .btn-bien    { border-color: #10b981; color: #10b981; }
+    .btn-bien:hover    { background: #10b981; color: #fff; }
+    .btn-regular { border-color: #f59e0b; color: #f59e0b; }
+    .btn-regular:hover { background: #f59e0b; color: #fff; }
+    .btn-mal     { border-color: #ef4444; color: #ef4444; }
+    .btn-mal:hover     { background: #ef4444; color: #fff; }
+
+    .khint {
+      font-size: 0.72rem; color: var(--text-muted);
+      text-align: center;
+    }
+    kbd {
+      background: var(--border); padding: 1px 5px;
+      border-radius: 4px; font-family: monospace; font-size: .85em;
+    }
+
+    .empty-st {
+      margin: auto; text-align: center;
+      color: var(--text-muted);
+    }
+    .empty-st .ico { font-size: 2.5rem; margin-bottom: 8px; }
+
+    .tdot {
+      width: 7px; height: 7px;
+      border-radius: 50%; flex-shrink: 0;
+    }
+  </style>
+</head>
+<body>
+  <!-- Header -->
+  <header>
+    <h1>🎴 Flashcards — Concurrencia</h1>
+    <div class="hdr-spacer"></div>
+    <span id="filter-summary"></span>
+    <button id="theme-btn" onclick="toggleTheme()">☀️ Claro</button>
+  </header>
+
+  <!-- Sidebar -->
+  <nav class="sidebar">
+    <div class="fsec">
+      <h3>Tema</h3>
+      <div class="chips" id="tema-chips"></div>
+    </div>
+
+    <div class="fsec">
+      <h3>Dificultad</h3>
+      <div class="trow">
+        <button class="tbtn d-baja on"  data-diff="baja"  onclick="toggleDiff('baja')">Baja</button>
+        <button class="tbtn d-media on" data-diff="media" onclick="toggleDiff('media')">Media</button>
+        <button class="tbtn d-alta on"  data-diff="alta"  onclick="toggleDiff('alta')">Alta</button>
+      </div>
+    </div>
+
+    <div class="fsec">
+      <h3>Prioridad</h3>
+      <div class="trow">
+        <button class="tbtn on" id="prio-1" onclick="togglePrio(1)">★★★ P1</button>
+        <button class="tbtn on" id="prio-2" onclick="togglePrio(2)">★★☆ P2</button>
+        <button class="tbtn on" id="prio-3" onclick="togglePrio(3)">★☆☆ P3</button>
+      </div>
+    </div>
+
+    <div class="fsec">
+      <h3>Opciones</h3>
+      <label class="cbi"><input type="checkbox" id="f-trampa"   onchange="applyFilters()">⚠ Solo trampas</label>
+      <label class="cbi"><input type="checkbox" id="f-mustknow" onchange="applyFilters()">🎯 Solo must-know</label>
+      <label class="cbi"><input type="checkbox" id="f-shuffle"  onchange="toggleShuffle()">🔀 Barajar</label>
+    </div>
+
+    <div class="fsec">
+      <h3>Modo de estudio</h3>
+      <div class="trow">
+        <button class="mbtn on" id="mode-repaso" onclick="setMode('repaso')">📖 Repaso</button>
+        <button class="mbtn"    id="mode-test"   onclick="setMode('test')">✏️ Test</button>
+      </div>
+    </div>
+
+    <div class="fsec" style="margin-top:auto">
+      <h3>Sesión actual</h3>
+      <div class="sgrid">
+        <div class="sbox"><div class="v" id="s-vis">0</div><div class="l">Vistas</div></div>
+        <div class="sbox bien"><div class="v" id="s-bien">0</div><div class="l">✓ Bien</div></div>
+        <div class="sbox regular"><div class="v" id="s-reg">0</div><div class="l">△ Regular</div></div>
+        <div class="sbox mal"><div class="v" id="s-mal">0</div><div class="l">✗ No sabía</div></div>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:6px;margin-top:8px">
+        <button class="sbtn" id="btn-onlymal" onclick="filterOnlyMal()" disabled>Solo las que no sé (0)</button>
+        <button class="sbtn danger" onclick="resetSession()">🔄 Reiniciar sesión</button>
+      </div>
+    </div>
+  </nav>
+
+  <!-- Main -->
+  <main>
+    <div class="prow">
+      <div class="pbar"><div class="pfill" id="pfill" style="width:0%"></div></div>
+      <div class="pctr" id="pctr">— / —</div>
+    </div>
+
+    <div class="scene" onclick="handleCardClick()">
+      <div class="card" id="card">
+        <div class="face face-front" id="cf"></div>
+        <div class="face face-back"  id="cb"></div>
+      </div>
+    </div>
+
+    <div class="ctrl" id="ctrl">
+      <button class="btn" id="btn-prev" onclick="prevCard()">← Anterior</button>
+      <button class="btn btn-flip" id="btn-flip" onclick="flipCard()" style="display:none">Voltear</button>
+      <div class="rg" id="rg" style="display:none">
+        <button class="btn btn-mal"     onclick="rateCard('mal')">✗ No sabía</button>
+        <button class="btn btn-regular" onclick="rateCard('regular')">△ Regular</button>
+        <button class="btn btn-bien"    onclick="rateCard('bien')">✓ Bien</button>
+      </div>
+      <button class="btn" id="btn-next" onclick="nextCard()">Siguiente →</button>
+    </div>
+
+    <div class="khint">
+      <kbd>Espacio</kbd> voltear &nbsp;·&nbsp;
+      <kbd>←</kbd><kbd>→</kbd> navegar &nbsp;·&nbsp;
+      <kbd>1</kbd><kbd>2</kbd><kbd>3</kbd> calificar (bien / regular / no sabía)
+    </div>
+  </main>
+
+  <script>
+    // ── State ────────────────────────────────────────────
+    let allCards = [];
+    let deck = [];           // filtered + possibly shuffled
+    let idx = 0;
+    let flipped = false;
+    let mode = 'repaso';     // 'repaso' | 'test'
+    let isDark = true;
+    let isShuffled = false;
+    let soloMal = false;
+
+    const session = {};      // id -> 'bien' | 'regular' | 'mal'
+
+    const filters = {
+      temas:       new Set(['all']),
+      diffs:       new Set(['baja', 'media', 'alta']),
+      prios:       new Set([1, 2, 3]),
+    };
+
+    // Tema → color
+    const TC = {
+      'concurrencia':   '#6366f1',
+      'fundamentos':    '#14b8a6',
+      'hilos':          '#8b5cf6',
+      'monitor':        '#22c55e',
+      'semaforos':      '#f97316',
+      'petri':          '#ef4444',
+      'petri-temporal': '#dc2626',
+      'reactivos':      '#ec4899',
+      'testing':        '#eab308',
+      'automatas':      '#06b6d4',
+      'gramaticas':     '#4f46e5',
+      'moore-mealy':    '#a16207',
+      'regex':          '#84cc16',
+    };
+
+    // ── Boot ─────────────────────────────────────────────
+    async function boot() {
+      const res = await fetch('preguntas.json');
+      allCards = await res.json();
+      buildTemaChips();
+      applyFilters();
+    }
+
+    function buildTemaChips() {
+      const temas = [...new Set(allCards.map(c => c.tema))].sort();
+      const box = document.getElementById('tema-chips');
+
+      addChip(box, 'Todos', 'all', true);
+      temas.forEach(t => addChip(box, t, t, false));
+    }
+
+    function addChip(box, label, value, active) {
+      const b = document.createElement('button');
+      b.className = 'chip' + (active ? ' on' : '');
+      b.dataset.tema = value;
+      b.onclick = () => selectTema(value);
+      if (value !== 'all') {
+        const dot = document.createElement('span');
+        dot.className = 'tdot';
+        dot.style.background = TC[value] || '#888';
+        b.appendChild(dot);
+      }
+      b.appendChild(document.createTextNode(label));
+      box.appendChild(b);
+    }
+
+    // ── Filter logic ─────────────────────────────────────
+    function selectTema(t) {
+      if (t === 'all') {
+        filters.temas = new Set(['all']);
+      } else {
+        filters.temas.delete('all');
+        filters.temas.has(t) ? filters.temas.delete(t) : filters.temas.add(t);
+        if (filters.temas.size === 0) filters.temas.add('all');
+      }
+      document.querySelectorAll('#tema-chips .chip').forEach(c => {
+        c.classList.toggle('on', filters.temas.has(c.dataset.tema));
+      });
+      applyFilters();
+    }
+
+    function toggleDiff(d) {
+      if (filters.diffs.has(d) && filters.diffs.size > 1) filters.diffs.delete(d);
+      else filters.diffs.add(d);
+      document.querySelector(`.tbtn.d-${d}`).classList.toggle('on', filters.diffs.has(d));
+      applyFilters();
+    }
+
+    function togglePrio(p) {
+      if (filters.prios.has(p) && filters.prios.size > 1) filters.prios.delete(p);
+      else filters.prios.add(p);
+      document.getElementById(`prio-${p}`).classList.toggle('on', filters.prios.has(p));
+      applyFilters();
+    }
+
+    function toggleShuffle() {
+      isShuffled = document.getElementById('f-shuffle').checked;
+      applyFilters();
+    }
+
+    function applyFilters() {
+      const onlyTrampa   = document.getElementById('f-trampa').checked;
+      const onlyMustKnow = document.getElementById('f-mustknow').checked;
+
+      deck = allCards.filter(c => {
+        if (!filters.temas.has('all') && !filters.temas.has(c.tema)) return false;
+        if (!filters.diffs.has(c.dificultad)) return false;
+        if (!filters.prios.has(c.prioridad))  return false;
+        if (onlyTrampa   && !c.trampa)                     return false;
+        if (onlyMustKnow && !c.tags.includes('must-know')) return false;
+        if (soloMal      && session[c.id] !== 'mal')       return false;
+        return true;
+      });
+
+      if (isShuffled) shuffle(deck);
+
+      idx = 0;
+      flipped = false;
+      renderCard();
+      updateSummary();
+    }
+
+    function shuffle(arr) {
+      for (let i = arr.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [arr[i], arr[j]] = [arr[j], arr[i]];
+      }
+    }
+
+    // ── Mode ─────────────────────────────────────────────
+    function setMode(m) {
+      mode = m;
+      document.getElementById('mode-repaso').classList.toggle('on', m === 'repaso');
+      document.getElementById('mode-test').classList.toggle('on', m === 'test');
+      flipped = false;
+      renderCard();
+    }
+
+    // ── Render ───────────────────────────────────────────
+    function renderCard() {
+      const card = document.getElementById('card');
+      card.classList.toggle('flipped', flipped);
+
+      if (deck.length === 0) {
+        document.getElementById('cf').innerHTML =
+          `<div class="empty-st"><div class="ico">🔍</div><p>Sin tarjetas con estos filtros</p></div>`;
+        document.getElementById('cb').innerHTML = '';
+        document.getElementById('pctr').textContent = '0 / 0';
+        document.getElementById('pfill').style.width = '0%';
+        updateCtrl();
+        return;
+      }
+
+      const q  = deck[idx];
+      const tc = TC[q.tema] || '#888';
+      const stars = '★'.repeat(4 - q.prioridad) + '☆'.repeat(q.prioridad - 1);
+      const rating = session[q.id];
+      const rEmoji = { bien: '✓', regular: '△', mal: '✗' }[rating] || '';
+
+      // Front
+      document.getElementById('cf').innerHTML =
+        `<div class="cmeta">
+           <span class="badge" style="background:${tc}22;color:${tc};border:1px solid ${tc}44">${q.tema}</span>
+           <span class="badge b-d-${q.dificultad}">${q.dificultad}</span>
+           <span class="b-prio badge">${stars}</span>
+           ${q.trampa ? '<span class="badge b-trampa">⚠ TRAMPA</span>' : ''}
+           ${rEmoji ? `<span class="b-rating">${rEmoji}</span>` : ''}
+         </div>
+         <div class="subtema">${q.subtema.replace(/-/g, ' ')}</div>
+         <p class="pregunta">${esc(q.pregunta)}</p>
+         <div class="flip-hint">Clic o <kbd>Espacio</kbd> para ver respuesta</div>`;
+
+      // Back
+      const tags = (q.tags || []).filter(t => !t.startsWith('requisito:')).slice(0, 8);
+      document.getElementById('cb').innerHTML =
+        `<div class="cmeta">
+           <span class="badge" style="background:${tc}22;color:${tc};border:1px solid ${tc}44">${q.tema}</span>
+           <span class="badge b-d-${q.dificultad}">${q.dificultad}</span>
+           ${q.trampa ? '<span class="badge b-trampa">⚠ TRAMPA</span>' : ''}
+         </div>
+         <p class="respuesta">${esc(q.respuesta)}</p>
+         <div class="ctags">${tags.map(t => `<span class="tag">${t}</span>`).join('')}</div>
+         <div class="cfuente">📖 ${q.fuente.replace(/-/g, ' ')}</div>`;
+
+      // Progress
+      const pct = deck.length > 1 ? (idx / (deck.length - 1)) * 100 : 100;
+      document.getElementById('pfill').style.width = pct + '%';
+      document.getElementById('pctr').textContent = `${idx + 1} / ${deck.length}`;
+
+      updateCtrl();
+    }
+
+    function updateCtrl() {
+      document.getElementById('btn-prev').disabled = idx <= 0;
+      document.getElementById('btn-next').disabled = idx >= deck.length - 1;
+
+      const btnFlip = document.getElementById('btn-flip');
+      const rg      = document.getElementById('rg');
+
+      if (mode === 'test') {
+        btnFlip.style.display = flipped ? 'none' : '';
+        rg.style.display      = flipped ? ''     : 'none';
+      } else {
+        btnFlip.style.display = 'none';
+        rg.style.display      = 'none';
+      }
+    }
+
+    // ── Navigation ───────────────────────────────────────
+    function handleCardClick() {
+      // In test mode only flip on explicit button, not card click after flip
+      if (mode === 'test' && flipped) return;
+      flipCard();
+    }
+
+    function flipCard() {
+      if (deck.length === 0) return;
+      flipped = !flipped;
+      document.getElementById('card').classList.toggle('flipped', flipped);
+      updateCtrl();
+    }
+
+    function nextCard() {
+      if (idx < deck.length - 1) { idx++; flipped = false; renderCard(); }
+    }
+    function prevCard() {
+      if (idx > 0) { idx--; flipped = false; renderCard(); }
+    }
+
+    // ── Rating ───────────────────────────────────────────
+    function rateCard(r) {
+      if (!deck[idx]) return;
+      session[deck[idx].id] = r;
+      updateStats();
+      if (idx < deck.length - 1) nextCard();
+      else renderCard(); // refresh rating indicator at end
+    }
+
+    // ── Session stats ────────────────────────────────────
+    function updateStats() {
+      const cnt = { bien: 0, regular: 0, mal: 0 };
+      for (const v of Object.values(session)) if (cnt[v] !== undefined) cnt[v]++;
+      const total = Object.keys(session).length;
+
+      document.getElementById('s-vis').textContent  = total;
+      document.getElementById('s-bien').textContent = cnt.bien;
+      document.getElementById('s-reg').textContent  = cnt.regular;
+      document.getElementById('s-mal').textContent  = cnt.mal;
+
+      const btn = document.getElementById('btn-onlymal');
+      btn.textContent = `Solo las que no sé (${cnt.mal})`;
+      btn.disabled    = cnt.mal === 0;
+    }
+
+    function filterOnlyMal() {
+      soloMal = true;
+      // reset all other filters
+      filters.temas = new Set(['all']);
+      filters.diffs = new Set(['baja', 'media', 'alta']);
+      filters.prios = new Set([1, 2, 3]);
+      document.querySelectorAll('#tema-chips .chip').forEach(c =>
+        c.classList.toggle('on', c.dataset.tema === 'all'));
+      ['baja','media','alta'].forEach(d =>
+        document.querySelector(`.tbtn.d-${d}`).classList.add('on'));
+      [1,2,3].forEach(p =>
+        document.getElementById(`prio-${p}`).classList.add('on'));
+      applyFilters();
+    }
+
+    function resetSession() {
+      soloMal = false;
+      for (const k of Object.keys(session)) delete session[k];
+      updateStats();
+      applyFilters();
+    }
+
+    function updateSummary() {
+      document.getElementById('filter-summary').textContent =
+        `${deck.length} de ${allCards.length} tarjetas`;
+    }
+
+    // ── Theme ────────────────────────────────────────────
+    function toggleTheme() {
+      isDark = !isDark;
+      document.documentElement.dataset.theme = isDark ? '' : 'light';
+      document.getElementById('theme-btn').textContent = isDark ? '☀️ Claro' : '🌙 Oscuro';
+    }
+
+    // ── Keyboard ─────────────────────────────────────────
+    document.addEventListener('keydown', e => {
+      if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+      if (e.ctrlKey || e.metaKey || e.altKey) return;
+      switch (e.key) {
+        case ' ':
+        case 'Enter':
+          e.preventDefault(); flipCard(); break;
+        case 'ArrowRight': case 'n': case 'l':
+          nextCard(); break;
+        case 'ArrowLeft':  case 'p': case 'h':
+          prevCard(); break;
+        case '1':
+          if (mode === 'test' && flipped) rateCard('bien');    break;
+        case '2':
+          if (mode === 'test' && flipped) rateCard('regular'); break;
+        case '3':
+          if (mode === 'test' && flipped) rateCard('mal');     break;
+      }
+    });
+
+    // ── Utils ────────────────────────────────────────────
+    function esc(s) {
+      return s
+        .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+        .replace(/"/g,'&quot;').replace(/\n/g,'<br>');
+    }
+
+    boot();
+  </script>
+</body>
+</html>

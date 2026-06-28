@@ -10,7 +10,6 @@ actor "SegmentoIntermedio\n(H3 — S_superior)" as Thread
 participant Monitor
 participant RedPetri
 participant Politica
-participant RastreadorClientes as Rastreador
 participant Logger
 
 Thread -> Monitor : fireTransition(2)
@@ -51,12 +50,6 @@ note right of RedPetri : M ← M + Post[2] − Pre[2]
 RedPetri --> Monitor : (void)
 deactivate RedPetri
 
-Monitor -> Rastreador : disparar(2)
-activate Rastreador
-note right of Rastreador : mueve Cliente de cola P3 → cola P5
-Rastreador --> Monitor : cliente
-deactivate Rastreador
-
 Monitor -> RedPetri : verificarInvariantesPlaza()
 activate RedPetri
 note right of RedPetri : valida PI-1..PI-6\nlanza ViolacionInvarianteException si falla
@@ -69,20 +62,30 @@ note right of Politica : c2++\n(separado de debeDisparar para\nevitar efectos en
 Politica --> Monitor : (void)
 deactivate Politica
 
-Monitor -> Logger : registrar(2, cliente.getId())
+Monitor -> Logger : registrar(2)
 activate Logger
+note right of Logger : escribe "T2\n" en el log
 Logger --> Monitor : (void)
 deactivate Logger
 
 note over Monitor
-  Para cada transición i:
+  Actualiza relojes: para cada transición i
   • Si recién habilitada: tiempoHabilitacion[i] = ahora
-                          tiempoObjetivo[i] = ahora + alfa + random(0, beta−alfa)
+                          tiempoObjetivo[i] = ahora + alfa
   • Si deshabilitada:     tiempoHabilitacion[i] = −1
-  • Si habilitada:        condiciones[i].signalAll()
+
+  Señalización dirigida por política:
+  candidatos = sensibilizadas ∩ conHilosEsperando
+  ganador = politica.cualDisparar(candidatos)
+  condiciones[ganador].signal()
 end note
 
-Monitor -> Monitor : actualizar relojes + signalAll(condiciones[i])
+Monitor -> Politica : cualDisparar(candidatos)
+activate Politica
+Politica --> Monitor : ganador
+deactivate Politica
+
+Monitor -> Monitor : condiciones[ganador].signal()
 
 Monitor -> Monitor : lock.unlock()
 

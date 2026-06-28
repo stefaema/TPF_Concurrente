@@ -30,11 +30,6 @@ public class Logger {
         writer.println("T" + t);
     }
 
-    public void escribirResumen(String texto) {
-        writer.println();
-        writer.println(texto);
-    }
-
     public void cerrar() {
         writer.flush();
         writer.close();

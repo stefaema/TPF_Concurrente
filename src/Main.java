@@ -1,30 +1,20 @@
-import java.util.ArrayList;
-import java.util.LinkedHashMap;
-import java.util.List;
 import java.util.Map;
 import java.util.Scanner;
 import java.util.concurrent.atomic.AtomicInteger;
 
 public class Main {
 
-    private static final int    OBJETIVO  = 186;
-    private static final String DIR_LOGS  = "logs";
-    private static final String LOG_BATCH = DIR_LOGS + "/log.txt";
+    private static final int    OBJETIVO = 186;
+    private static final String LOG_FILE = "logs/log.txt";
 
-    // Tiempos mínimos (alfa) de las transiciones temporizadas {T1,T4,T5,T8,T9,T10}.
-    // Semántica débil con β = ∞: la transición dispara luego de que alfa transcurre.
     private static final Map<Integer, TiemposTransicion.VentanaTemporal> TIEMPOS_DEFAULT = Map.of(
          1, new TiemposTransicion.VentanaTemporal(100),  // T1:  ingreso a la sala de espera
-         4, new TiemposTransicion.VentanaTemporal(200),  // T4:  atención agente inferior
-         5, new TiemposTransicion.VentanaTemporal(200),  // T5:  atención agente superior
+         4, new TiemposTransicion.VentanaTemporal(180),  // T4:  atención agente inferior
+         5, new TiemposTransicion.VentanaTemporal(220),  // T5:  atención agente superior
          8, new TiemposTransicion.VentanaTemporal(100),  // T8:  procesamiento de cancelación
          9, new TiemposTransicion.VentanaTemporal(150),  // T9:  procesamiento de confirmación
         10, new TiemposTransicion.VentanaTemporal(150)   // T10: procesamiento de pago
     );
-
-    // ═════════════════════════════════════════════════════════════════════════
-    // Tipos internos
-    // ═════════════════════════════════════════════════════════════════════════
 
     enum TipoPolitica {
         BALANCEADA, PRIORIZADA;
@@ -41,27 +31,6 @@ public class Main {
         }
     }
 
-    static final class ResultadoEjecucion {
-        final int                             numero;
-        final TipoPolitica                    politica;
-        final long                            duracionMs;
-        final EstadisticasPolitica            estadisticas;
-        final AnalizadorInvariantes.Resultado analisis;
-        final String                          archivoLog;
-
-        ResultadoEjecucion(int numero, TipoPolitica politica, long duracionMs,
-                           EstadisticasPolitica estadisticas,
-                           AnalizadorInvariantes.Resultado analisis,
-                           String archivoLog) {
-            this.numero       = numero;
-            this.politica     = politica;
-            this.duracionMs   = duracionMs;
-            this.estadisticas = estadisticas;
-            this.analisis     = analisis;
-            this.archivoLog   = archivoLog;
-        }
-    }
-
     // ═════════════════════════════════════════════════════════════════════════
     // Entry point
     // ═════════════════════════════════════════════════════════════════════════
@@ -72,115 +41,51 @@ public class Main {
             System.exit(1);
         });
 
-        switch (args.length) {
-            case 0  -> modoInteractivo();
-            case 1  -> modoBatch(args[0]);
-            default -> {
-                System.err.println("Uso: java Main [balanceada|priorizada]");
-                System.err.println("     Sin argumentos → modo interactivo");
-                System.exit(1);
-            }
-        }
-    }
-
-    // ═════════════════════════════════════════════════════════════════════════
-    // Modo interactivo
-    // ═════════════════════════════════════════════════════════════════════════
-
-    private static void modoInteractivo() {
-        Scanner sc = new Scanner(System.in);
-        imprimirBanner();
-
-        // ── Número de ejecuciones ──
-        System.out.println("  Configuración");
-        System.out.println("  " + "─".repeat(50));
-        int total = leerEntero(sc, "  Número de ejecuciones", 1, 1, 50);
-
-        // ── Distribución de políticas ──
-        System.out.println();
-        int numBalanceadas;
-        if (total == 1) {
-            System.out.println("  Política:");
-            System.out.println("    [1] BALANCEADA");
-            System.out.println("    [2] PRIORIZADA");
-            numBalanceadas = leerEntero(sc, "  Opción", 1, 1, 2) == 1 ? 1 : 0;
+        TipoPolitica tipo;
+        if (args.length == 0) {
+            tipo = elegirPolitica();
+        } else if (args.length == 1) {
+            tipo = TipoPolitica.parsear(args[0]);
         } else {
-            numBalanceadas = leerEntero(sc,
-                String.format("  Ejecuciones BALANCEADA (resto → PRIORIZADA, total=%d)", total),
-                total / 2, 0, total);
-        }
-        int numPriorizadas = total - numBalanceadas;
-        System.out.printf("    → %d× BALANCEADA  +  %d× PRIORIZADA%n", numBalanceadas, numPriorizadas);
-
-        // ── Tiempos de transición ──
-        TiemposTransicion tiempos = elegirTiempos(sc);
-
-        // ── Confirmación ──
-        System.out.println();
-        System.out.println("  " + "─".repeat(57));
-        System.out.printf("  %d ejecución(es):  %d× BALANCEADA  +  %d× PRIORIZADA%n",
-            total, numBalanceadas, numPriorizadas);
-        System.out.printf("  Tiempos : %s%n", formatearTiempos(tiempos));
-        System.out.printf("  Objetivo: %d invariantes por ejecución%n", OBJETIVO);
-        System.out.println("  " + "─".repeat(57));
-        if (!leerConfirmacion(sc, "  ¿Confirmar?")) {
-            System.out.println("  Cancelado.");
+            System.err.println("Uso: java Main [balanceada|priorizada]");
+            System.exit(1);
             return;
         }
-        System.out.println();
 
-        // ── Ejecutar ──
-        List<TipoPolitica> orden = new ArrayList<>();
-        for (int i = 0; i < numBalanceadas; i++) orden.add(TipoPolitica.BALANCEADA);
-        for (int i = 0; i < numPriorizadas; i++) orden.add(TipoPolitica.PRIORIZADA);
-
-        List<ResultadoEjecucion> resultados = new ArrayList<>();
-        for (int i = 0; i < total; i++) {
-            TipoPolitica tipo = orden.get(i);
-            String archivoLog = String.format("%s/ejecucion-%d-%s.txt",
-                DIR_LOGS, i + 1, tipo.name().toLowerCase());
-            resultados.add(ejecutar(tipo, tiempos, i + 1, total, archivoLog));
-        }
-
-        // ── Resumen y drill-down ──
-        mostrarTablaResumen(resultados);
-        preguntarDetalle(sc, resultados);
+        ejecutar(tipo, new TiemposTransicion(TIEMPOS_DEFAULT));
     }
 
     // ═════════════════════════════════════════════════════════════════════════
-    // Modo batch — compatibilidad con scripts
+    // Selección de política (modo interactivo)
     // ═════════════════════════════════════════════════════════════════════════
 
-    private static void modoBatch(String arg) {
-        TipoPolitica tipo = TipoPolitica.parsear(arg);
-        System.out.printf("Ejecución iniciada — política: %s — objetivo: %d invariantes%n",
-            tipo, OBJETIVO);
-
-        ResultadoEjecucion r = ejecutar(tipo, new TiemposTransicion(TIEMPOS_DEFAULT),
-            1, 1, LOG_BATCH);
-
-        System.out.println(r.estadisticas.formatear());
-        AnalizadorInvariantes.imprimirReporte(r.analisis, OBJETIVO);
-        System.out.println("Ejecución finalizada.");
+    private static TipoPolitica elegirPolitica() {
+        Scanner sc = new Scanner(System.in);
+        System.out.println();
+        System.out.println("  Política:");
+        System.out.println("    [1] BALANCEADA  (50% / 50%)");
+        System.out.println("    [2] PRIORIZADA  (75% agente sup. / 80% confirmadas)");
+        System.out.printf("  Opción [1]: ");
+        String linea = sc.nextLine().trim();
+        return "2".equals(linea) ? TipoPolitica.PRIORIZADA : TipoPolitica.BALANCEADA;
     }
 
     // ═════════════════════════════════════════════════════════════════════════
     // Núcleo de ejecución
     // ═════════════════════════════════════════════════════════════════════════
 
-    private static ResultadoEjecucion ejecutar(
-            TipoPolitica tipo, TiemposTransicion tiempos,
-            int numEjecucion, int totalEjecuciones,
-            String archivoLog) {
+    private static void ejecutar(TipoPolitica tipo, TiemposTransicion tiempos) {
+        System.out.printf("%nIniciando — política: %s — objetivo: %d invariantes%n%n",
+            tipo.name(), OBJETIVO);
 
-        RedPetri  red      = new RedPetri();
-        Logger    logger   = new Logger(archivoLog);
-        Politica  politica = switch (tipo) {
+        RedPetri      red      = new RedPetri();
+        Logger        logger   = new Logger(LOG_FILE);
+        Politica      politica = switch (tipo) {
             case BALANCEADA -> new PoliticaBalanceada();
             case PRIORIZADA -> new PoliticaPriorizada();
         };
-        Monitor monitor = new Monitor(red, politica, tiempos, logger);
-        AtomicInteger      contador  = new AtomicInteger(0);
+        Monitor       monitor  = new Monitor(red, politica, tiempos, logger);
+        AtomicInteger contador = new AtomicInteger(0);
 
         Thread[] hilosIntermedios = {
             new Thread(new SegmentoIntermedio(monitor, new int[]{0, 1}),     "H1-ingreso"),
@@ -189,19 +94,19 @@ public class Main {
             new Thread(new SegmentoIntermedio(monitor, new int[]{6, 9, 10}), "H4-aprobacion"),
             new Thread(new SegmentoIntermedio(monitor, new int[]{7, 8}),     "H5-rechazo"),
         };
-        // H6 (S_salida): 1 hilo. T11 es inmediata; el bucle de SegmentoSalida re-dispara
-        // T11 directamente sin necesitar señal cuando P14 tiene múltiples tokens.
-        Thread[] hilosSalida = { new Thread(
-            new SegmentoSalida(monitor, 11, contador, OBJETIVO), "H6-salida") };
+        // H6 (S_salida): 1 hilo. T11 es inmediata; SegmentoSalida re-dispara
+        // T11 directamente sin señal cuando P14 tiene múltiples tokens.
+        Thread hiloSalida = new Thread(
+            new SegmentoSalida(monitor, 11, contador, OBJETIVO), "H6-salida");
 
-        long   inicio         = System.currentTimeMillis();
-        Thread progresoThread = iniciarProgreso(contador, numEjecucion, totalEjecuciones, tipo);
+        long   inicio   = System.currentTimeMillis();
+        Thread progreso = iniciarProgreso(contador);
 
         for (Thread t : hilosIntermedios) t.start();
-        for (Thread t : hilosSalida)      t.start();
+        hiloSalida.start();
 
         try {
-            for (Thread t : hilosSalida)      t.join();
+            hiloSalida.join();
             for (Thread t : hilosIntermedios) t.interrupt();
             for (Thread t : hilosIntermedios) t.join();
         } catch (InterruptedException e) {
@@ -210,31 +115,35 @@ public class Main {
 
         long duracion = System.currentTimeMillis() - inicio;
 
-        progresoThread.interrupt();
-        try { progresoThread.join(); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
-        imprimirBarraFinal(numEjecucion, totalEjecuciones, tipo, duracion);
+        progreso.interrupt();
+        try { progreso.join(); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
 
-        EstadisticasPolitica stats = politica.getEstadisticas();
-        logger.escribirResumen(stats.formatear());
+        System.out.printf("\r  [%s] %d/%d  %.1fs ✓%n",
+            "█".repeat(25), OBJETIVO, OBJETIVO, duracion / 1000.0);
+
         logger.cerrar();
 
-        AnalizadorInvariantes.Resultado analisis =
-            new AnalizadorInvariantes(archivoLog, OBJETIVO).calcular();
-
-        return new ResultadoEjecucion(numEjecucion, tipo, duracion, stats, analisis, archivoLog);
+        System.out.printf("%nInvariantes completados: %d / %d  %s%n",
+            contador.get(), OBJETIVO,
+            contador.get() == OBJETIVO ? "[OK]" : "[FALLO]");
+        System.out.println();
+        System.out.println(politica.getEstadisticas().formatear());
+        System.out.printf("%nLog: %s%n", LOG_FILE);
+        System.out.println("  → Análisis de invariantes por regex: python3 analizar_log.py " + LOG_FILE);
     }
 
     // ═════════════════════════════════════════════════════════════════════════
     // Barra de progreso
     // ═════════════════════════════════════════════════════════════════════════
 
-    private static Thread iniciarProgreso(AtomicInteger contador,
-                                          int numEjecucion, int totalEjecuciones,
-                                          TipoPolitica tipo) {
+    private static Thread iniciarProgreso(AtomicInteger contador) {
         Thread t = new Thread(() -> {
             while (!Thread.currentThread().isInterrupted()) {
-                int n = Math.min(contador.get(), OBJETIVO);
-                imprimirBarra(numEjecucion, totalEjecuciones, tipo, n);
+                int n      = Math.min(contador.get(), OBJETIVO);
+                int filled = OBJETIVO > 0 ? n * 25 / OBJETIVO : 0;
+                System.out.printf("\r  [%s%s] %3d/%d  ",
+                    "█".repeat(filled), "░".repeat(25 - filled), n, OBJETIVO);
+                System.out.flush();
                 if (n >= OBJETIVO) break;
                 try {
                     Thread.sleep(150);
@@ -246,220 +155,5 @@ public class Main {
         t.setDaemon(true);
         t.start();
         return t;
-    }
-
-    private static void imprimirBarra(int num, int total, TipoPolitica tipo, int actual) {
-        final int barWidth = 25;
-        int filled = OBJETIVO > 0 ? (int) ((long) actual * barWidth / OBJETIVO) : 0;
-        StringBuilder bar = new StringBuilder("[");
-        for (int i = 0; i < barWidth; i++) bar.append(i < filled ? '█' : '░');
-        bar.append(']');
-        System.out.printf("\r  Ejecución %d/%d [%-11s] %s %3d/%d  ",
-            num, total, tipo.name(), bar, actual, OBJETIVO);
-        System.out.flush();
-    }
-
-    private static void imprimirBarraFinal(int num, int total, TipoPolitica tipo, long ms) {
-        System.out.printf("\r  Ejecución %d/%d [%-11s] [%s] %d/%d  %.1fs ✓%n",
-            num, total, tipo.name(), "█".repeat(25), OBJETIVO, OBJETIVO, ms / 1000.0);
-    }
-
-    // ═════════════════════════════════════════════════════════════════════════
-    // Tabla resumen
-    // ═════════════════════════════════════════════════════════════════════════
-
-    private static void mostrarTablaResumen(List<ResultadoEjecucion> resultados) {
-        final int SEP = 72;
-        System.out.println();
-        System.out.println("  " + "═".repeat(SEP));
-        System.out.println("  RESUMEN DE EJECUCIONES");
-        System.out.println("  " + "═".repeat(SEP));
-        System.out.printf("  %-4s  %-11s  %-7s  %-26s  %-20s%n",
-            "Ej.", "Política", "Tiempo", "Agente superior", "Confirmadas");
-        System.out.println("  " + "─".repeat(SEP));
-
-        for (ResultadoEjecucion r : resultados) {
-            double pctSup = r.analisis.pctSuperior();
-            double pctApb = r.analisis.pctAprobados();
-
-            boolean okSup, okApb;
-            String  etqSup, etqApb;
-            if (r.politica == TipoPolitica.PRIORIZADA) {
-                okSup  = pctSup >= 75.0; etqSup = "obj≥75%";
-                okApb  = pctApb >= 80.0; etqApb = "obj≥80%";
-            } else {
-                okSup  = pctSup >= 45.0 && pctSup <= 55.0; etqSup = "obj~50%";
-                okApb  = pctApb >= 45.0 && pctApb <= 55.0; etqApb = "obj~50%";
-            }
-
-            System.out.printf("  %-4d  %-11s  %4.1fs    %5.1f%% %-8s %s     %5.1f%% %-8s %s%n",
-                r.numero, r.politica.name(), r.duracionMs / 1000.0,
-                pctSup, etqSup, okSup ? "✓" : "✗",
-                pctApb, etqApb, okApb ? "✓" : "✗");
-        }
-        System.out.println("  " + "═".repeat(SEP));
-    }
-
-    // ═════════════════════════════════════════════════════════════════════════
-    // Detalle de ejecución
-    // ═════════════════════════════════════════════════════════════════════════
-
-    private static void preguntarDetalle(Scanner sc, List<ResultadoEjecucion> resultados) {
-        System.out.println();
-        while (true) {
-            System.out.printf("  Ver detalle de ejecución (1-%d, Enter para salir): ",
-                resultados.size());
-            String linea = sc.nextLine().trim();
-            if (linea.isEmpty()) break;
-            try {
-                int num = Integer.parseInt(linea);
-                if (num < 1 || num > resultados.size()) {
-                    System.out.printf("    ✗ Ingrese un número entre 1 y %d.%n", resultados.size());
-                    continue;
-                }
-                mostrarDetalle(resultados.get(num - 1));
-            } catch (NumberFormatException e) {
-                System.out.println("    ✗ Valor inválido.");
-            }
-        }
-        System.out.println();
-        System.out.println("  Fin.");
-    }
-
-    private static void mostrarDetalle(ResultadoEjecucion r) {
-        AnalizadorInvariantes.Resultado a = r.analisis;
-        final int SEP = 52;
-
-        System.out.println();
-        System.out.printf("  Ejecución %d — %s — %.1fs%n",
-            r.numero, r.politica.name(), r.duracionMs / 1000.0);
-        System.out.println("  " + "─".repeat(SEP));
-
-        System.out.println("  Distribución de T-invariantes:");
-        String[] nombres = {
-            "I1 (inf + rechazado)",
-            "I2 (inf + aprobado) ",
-            "I3 (sup + rechazado)",
-            "I4 (sup + aprobado) ",
-        };
-        for (int i = 0; i < 4; i++) {
-            double pct = a.total > 0 ? 100.0 * a.conteos[i] / a.total : 0.0;
-            System.out.printf("    %s : %3d  (%5.1f%%)%n", nombres[i], a.conteos[i], pct);
-        }
-
-        System.out.println();
-        System.out.println("  Agentes:");
-        System.out.printf("    Superior (I3+I4): %3d  (%5.1f%%)%n",
-            a.superior(), a.pctSuperior());
-        System.out.printf("    Inferior (I1+I2): %3d  (%5.1f%%)%n",
-            a.inferior(), 100.0 - a.pctSuperior());
-
-        System.out.println();
-        System.out.println("  Decisiones:");
-        System.out.printf("    Confirmadas (I2+I4): %3d  (%5.1f%%)%n",
-            a.aprobados(), a.pctAprobados());
-        System.out.printf("    Canceladas  (I1+I3): %3d  (%5.1f%%)%n",
-            a.cancelados(), 100.0 - a.pctAprobados());
-
-        System.out.println();
-        System.out.println("  Contadores internos de política:");
-        r.estadisticas.formatear().lines()
-            .filter(l -> !l.startsWith("---"))
-            .forEach(l -> System.out.println("    " + l));
-
-        System.out.println();
-        System.out.printf("  Log → %s%n", r.archivoLog);
-        if (a.incompletos > 0)
-            System.out.printf("  (secuencias incompletas al shutdown: %d)%n", a.incompletos);
-        System.out.println("  " + "─".repeat(SEP));
-        System.out.println();
-    }
-
-    // ═════════════════════════════════════════════════════════════════════════
-    // Configuración de tiempos
-    // ═════════════════════════════════════════════════════════════════════════
-
-    private static TiemposTransicion elegirTiempos(Scanner sc) {
-        System.out.println();
-        System.out.println("  Tiempos mínimos de transición (alfa ms, β = ∞):");
-        System.out.printf("    [1] Default  (%s)%n", formatearTiempos(new TiemposTransicion(TIEMPOS_DEFAULT)));
-        System.out.println("    [2] Personalizar");
-        int opcion = leerEntero(sc, "  Opción", 1, 1, 2);
-
-        if (opcion == 1) return new TiemposTransicion(TIEMPOS_DEFAULT);
-
-        System.out.println("    (Enter conserva el valor por defecto)");
-        int[]    ids    = {  1,                 4,                  5,                  8,
-                             9,                 10                 };
-        String[] labels = { "T1  ingreso sala", "T4  atención inf.", "T5  atención sup.",
-                             "T8  cancelación ", "T9  confirmación ", "T10 pago          " };
-
-        Map<Integer, TiemposTransicion.VentanaTemporal> custom = new LinkedHashMap<>();
-        for (int i = 0; i < ids.length; i++) {
-            TiemposTransicion.VentanaTemporal def = TIEMPOS_DEFAULT.get(ids[i]);
-            System.out.printf("    %s%n", labels[i]);
-            long alfa = leerLong(sc, "      alfa (mínimo)", def.alfa(), 0, 30_000);
-            custom.put(ids[i], new TiemposTransicion.VentanaTemporal(alfa));
-        }
-        return new TiemposTransicion(custom);
-    }
-
-    private static String formatearTiempos(TiemposTransicion t) {
-        return String.format(
-            "T1=%dms  T4=%dms  T5=%dms  T8=%dms  T9=%dms  T10=%dms",
-            t.getAlfa(1), t.getAlfa(4), t.getAlfa(5),
-            t.getAlfa(8), t.getAlfa(9), t.getAlfa(10));
-    }
-
-    // ═════════════════════════════════════════════════════════════════════════
-    // Helpers de lectura
-    // ═════════════════════════════════════════════════════════════════════════
-
-    private static int leerEntero(Scanner sc, String prompt, int def, int min, int max) {
-        while (true) {
-            System.out.printf("%s [%d]: ", prompt, def);
-            String linea = sc.nextLine().trim();
-            if (linea.isEmpty()) return def;
-            try {
-                int v = Integer.parseInt(linea);
-                if (v >= min && v <= max) return v;
-                System.out.printf("    ✗ Ingrese un valor entre %d y %d.%n", min, max);
-            } catch (NumberFormatException e) {
-                System.out.println("    ✗ Valor inválido.");
-            }
-        }
-    }
-
-    private static long leerLong(Scanner sc, String prompt, long def, long min, long max) {
-        while (true) {
-            System.out.printf("%s [%d ms]: ", prompt, def);
-            String linea = sc.nextLine().trim();
-            if (linea.isEmpty()) return def;
-            try {
-                long v = Long.parseLong(linea);
-                if (v >= min && v <= max) return v;
-                System.out.printf("    ✗ Ingrese un valor entre %d y %d ms.%n", min, max);
-            } catch (NumberFormatException e) {
-                System.out.println("    ✗ Valor inválido.");
-            }
-        }
-    }
-
-    private static boolean leerConfirmacion(Scanner sc, String prompt) {
-        System.out.printf("%s [S/n]: ", prompt);
-        String r = sc.nextLine().trim().toLowerCase();
-        return r.isEmpty() || r.equals("s") || r.equals("si") || r.equals("sí");
-    }
-
-    // ═════════════════════════════════════════════════════════════════════════
-    // UI cosmética
-    // ═════════════════════════════════════════════════════════════════════════
-
-    private static void imprimirBanner() {
-        System.out.println();
-        System.out.println("  ╔══════════════════════════════════════════════════╗");
-        System.out.println("  ║   Agencia de Viajes — Simulación Red de Petri    ║");
-        System.out.println("  ╚══════════════════════════════════════════════════╝");
-        System.out.println();
     }
 }

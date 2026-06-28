@@ -151,7 +151,6 @@ class Logger {
     -writer: PrintWriter
     --
     +registrar(t: int): void
-    +escribirResumen(texto: String): void
     +cerrar(): void
 }
 
@@ -189,29 +188,15 @@ enum TipoPolitica <<inner Main>> {
     {static} parsear(arg: String): TipoPolitica
 }
 
-class "Main.ResultadoEjecucion" as ResultadoEjecucion <<inner>> {
-    +numero: int
-    +politica: TipoPolitica
-    +duracionMs: long
-    +estadisticas: EstadisticasPolitica
-    +analisis: Resultado
-    +archivoLog: String
-}
-
 class Main {
     -{static} OBJETIVO: int
-    -{static} DIR_LOGS: String
-    -{static} LOG_BATCH: String
+    -{static} LOG_FILE: String
     -{static} TIEMPOS_DEFAULT: Map<Integer, VentanaTemporal>
     --
     +{static} main(args: String[]): void
-    -{static} modoInteractivo(): void
-    -{static} modoBatch(arg: String): void
-    -{static} ejecutar(tipo, tiempos, num, total, log): ResultadoEjecucion
-    -{static} iniciarProgreso(contador, num, total, tipo): Thread
-    -{static} mostrarTablaResumen(resultados: List<ResultadoEjecucion>): void
-    -{static} mostrarDetalle(r: ResultadoEjecucion): void
-    -{static} elegirTiempos(sc: Scanner): TiemposTransicion
+    -{static} elegirPolitica(): TipoPolitica
+    -{static} ejecutar(tipo: TipoPolitica, tiempos: TiemposTransicion): void
+    -{static} iniciarProgreso(contador: AtomicInteger): Thread
 }
 
 ' ── Relaciones ──────────────────────────────────────────
@@ -237,13 +222,10 @@ AnalizadorInvariantes +-- Resultado
 AnalizadorInvariantes ..> Resultado : "retorna"
 
 Main +-- TipoPolitica
-Main +-- ResultadoEjecucion
-ResultadoEjecucion --> EstadisticasPolitica
-ResultadoEjecucion --> Resultado
 
-Main ..> Monitor              : "crea"
-Main ..> Segmento             : "crea"
-Main ..> Politica             : "crea"
+Main ..> Monitor               : "crea"
+Main ..> Segmento              : "crea"
+Main ..> Politica              : "crea"
 Main ..> AnalizadorInvariantes : "invoca"
 
 @enduml

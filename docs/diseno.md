@@ -464,7 +464,6 @@ Recibe disparos del Monitor y los escribe a un archivo de log incluyendo el ID d
 
 **Interfaz pública:**
 - `registrar(int t)`: escribe `T<n>` en una línea del archivo de log.
-- `escribirResumen(String texto)`: escribe un bloque de texto libre al final del log (usado por `Main` para el reporte de política).
 - `cerrar()`: flush explícito y cierre del stream.
 
 **Ciclo de vida del archivo:**
@@ -474,9 +473,9 @@ Recibe disparos del Monitor y los escribe a un archivo de log incluyendo el ID d
 
 **Modelo de sincronización**: `Logger` no necesita sincronización propia.
 - `registrar`: se invoca siempre **dentro del lock del Monitor**. Las llamadas son completamente seriales por construcción.
-- `escribirResumen` y `cerrar`: se invocan **una única vez** desde `Main`, después del `join()` de todos los hilos. En ese punto ningún hilo está activo.
+- `cerrar`: se invoca **una única vez** desde `Main`, después del `join()` de todos los hilos. En ese punto ningún hilo está activo.
 
-`Logger` no conoce `Politica` ni `EstadisticasPolitica`. Solo recibe texto ya formateado. Quién produce ese texto y qué significa es responsabilidad del llamador.
+El log queda con **solo líneas `T<n>`** — una transición por línea, en orden de disparo real. Las estadísticas de política y el análisis de invariantes se muestran exclusivamente en consola; no se escriben en el archivo.
 
 Etiquetar la clase como "Thread-safe" sería engañoso: sugeriría que tiene su propio mecanismo de exclusión cuando en realidad delega esa garantía al lock del Monitor.
 
@@ -507,31 +506,27 @@ T11
 
 **Instancia todo, arranca los hilos, coordina el shutdown.**
 
-#### Modos de ejecución
+#### Uso
 
-`Main` soporta dos modos seleccionados por los argumentos de línea de comandos:
+- **`java Main`** — pregunta la política por consola (`[1] BALANCEADA` / `[2] PRIORIZADA`), luego ejecuta.
+- **`java Main balanceada`** o **`java Main priorizada`** — usa la política indicada directamente.
 
-- **Sin argumentos → modo interactivo**: presenta un menú por consola para configurar el número de ejecuciones (1–50), la distribución de políticas (N× BALANCEADA + M× PRIORIZADA) y los tiempos de transición (default o personalizable). Ejecuta todas las ejecuciones en secuencia con una barra de progreso ASCII, y al finalizar muestra una tabla resumen con porcentajes y permite ver el detalle de cada ejecución individualmente.
-
-- **Con un argumento → modo batch**: `java Main balanceada` o `java Main priorizada`. Ejecuta una única ejecución con los tiempos por defecto, imprime las estadísticas de política y el análisis de invariantes por consola, escribe el log en `logs/log.txt`.
+En ambos casos se ejecuta **una única corrida** con los tiempos por defecto. Al finalizar, imprime las estadísticas de política y el análisis de T-invariantes en consola. El log queda en `logs/log.txt` con solo las transiciones disparadas (formato `T<n>`, una por línea).
 
 #### Tipos internos
 
-**`enum TipoPolitica`**: centraliza los valores válidos (`BALANCEADA`, `PRIORIZADA`) y encapsula el parseo desde string mediante `parsear(String arg)`. Garantiza que agregar una tercera política solo requiere un nuevo valor en el enum y un caso en el `switch` — sin lógica de strings dispersa.
-
-**`ResultadoEjecucion`** (inner class): transporta los resultados de una ejecución completada: número de ejecución, política usada, duración en ms, `EstadisticasPolitica` (contadores internos de la política), `AnalizadorInvariantes.Resultado` (conteos de T-invariantes) y la ruta del log. Permite mostrar la tabla resumen y el drill-down sin re-procesar los logs.
+**`enum TipoPolitica`**: centraliza los valores válidos (`BALANCEADA`, `PRIORIZADA`) y encapsula el parseo desde string mediante `parsear(String arg)`.
 
 #### Barra de progreso
 
-El método `iniciarProgreso()` lanza un hilo daemon que refresca una barra ASCII por `\r` cada 150 ms, leyendo el `AtomicInteger` compartido con los `SegmentoSalida`. Al finalizar la ejecución, `Main` interrumpe este hilo y sobreescribe la línea con el resultado final (duración, ✓).
+`iniciarProgreso()` lanza un hilo daemon que refresca una barra ASCII por `\r` cada 150 ms leyendo el `AtomicInteger` compartido con `SegmentoSalida`. Al finalizar, se sobreescribe la línea con el resultado final (duración, ✓).
 
 #### Constantes
 
 | Constante | Valor | Descripción |
 |---|---|---|
-| `OBJETIVO` | 186 | Invariantes a completar por ejecución |
-| `DIR_LOGS` | `"logs"` | Directorio de archivos de log |
-| `LOG_BATCH` | `"logs/log.txt"` | Ruta del log en modo batch |
+| `OBJETIVO` | 186 | Invariantes a completar |
+| `LOG_FILE` | `"logs/log.txt"` | Ruta del log |
 | `TIEMPOS_DEFAULT` | — | Tiempos por defecto de las transiciones temporales |
 
 Tiempos por defecto:
@@ -545,12 +540,11 @@ Tiempos por defecto:
 | T9  | 150 | Procesamiento de confirmación |
 | T10 | 150 | Procesamiento de pago |
 
-#### Flujo de una ejecución (método `ejecutar`)
+#### Flujo de ejecución (método `ejecutar`)
 
 ```java
-// Para cada ejecución (modo interactivo: N veces; modo batch: 1 vez):
 RedPetri  red      = new RedPetri();
-Logger    logger   = new Logger(archivoLog);   // crea directorio, rota log anterior
+Logger    logger   = new Logger(LOG_FILE);     // crea directorio, rota log anterior
 Politica  politica = switch (tipo) { ... };
 Monitor   monitor  = new Monitor(red, politica, tiempos, logger);
 AtomicInteger contador = new AtomicInteger(0);
@@ -564,28 +558,52 @@ Thread[] hilosIntermedios = {
     new Thread(new SegmentoIntermedio(monitor, new int[]{7, 8}),     "H5-rechazo"),
 };
 // H6: salida, auto-terminación al agotar 186 slots (1 hilo; T11 es inmediata)
-Thread[] hilosSalida = new Thread[1];
-hilosSalida[0] = new Thread(
+Thread hiloSalida = new Thread(
     new SegmentoSalida(monitor, 11, contador, OBJETIVO), "H6-salida");
 
 for (Thread t : hilosIntermedios) t.start();
-for (Thread t : hilosSalida)      t.start();
+hiloSalida.start();
 
 // Esperar terminación natural de H6
-for (Thread t : hilosSalida)      t.join();
+hiloSalida.join();
 // Interrumpir H1–H5 y esperar que salgan limpiamente
 for (Thread t : hilosIntermedios) t.interrupt();
 for (Thread t : hilosIntermedios) t.join();
 
-// Cerrar log, calcular resultado y retornar
-logger.escribirResumen(politica.getEstadisticas().formatear());
+// El log queda con solo las líneas T<n> — sin estadísticas
 logger.cerrar();
-AnalizadorInvariantes.Resultado analisis =
-    new AnalizadorInvariantes(archivoLog, OBJETIVO).calcular();
-return new ResultadoEjecucion(num, tipo, duracion, politica.getEstadisticas(), analisis, archivoLog);
+
+// Estadísticas e invariantes en consola
+System.out.println(politica.getEstadisticas().formatear());
+new AnalizadorInvariantes(LOG_FILE, OBJETIVO).analizar();
 ```
 
-Los logs van a `logs/ejecucion-N-<politica>.txt` en modo interactivo y a `logs/log.txt` en modo batch.
+---
+
+### `analizar_log.py` *(script Python)*
+
+Herramienta de verificación post-ejecución que se ejecuta sobre el archivo `logs/log.txt` una vez que la simulación terminó. Complementa al `AnalizadorInvariantes` Java: mientras este último se corre en la misma JVM y muestra el resultado por consola, el script Python **modifica el log en disco** eliminando los invariantes ya verificados.
+
+**Uso:** `python3 analizar_log.py [archivo.log]`
+
+**Algoritmo:**
+
+1. Lee el log extrayendo todas las líneas que coincidan con `T\d+`.
+2. Reconstruye las secuencias por cliente usando semántica **FIFO** sobre la estructura de la red (idéntico a `AnalizadorInvariantes.java`): cada `T0` abre una nueva secuencia; el resto de las transiciones se añaden a la primera secuencia cuyo último elemento sea el predecesor correcto según la red.
+3. Aplica una **única regex** sobre cada secuencia completa (terminada en `T11`) para clasificarla en I1–I4:
+
+```python
+PATRON_INVARIANTES = re.compile(
+    r"T0 T1 "
+    r"(?:(?P<inferior>T3 T4)|(?P<superior>T2 T5))"
+    r" "
+    r"(?:(?P<cancelado>T7 T8)|(?P<aprobado>T6 T9 T10))"
+    r" T11"
+)
+```
+
+4. Imprime el reporte de distribución (conteos I1–I4, agentes, decisiones).
+5. **Reescribe el log** con solo las transiciones de secuencias incompletas (clientes en vuelo al momento del shutdown). En condiciones normales quedan a lo sumo unas pocas decenas de líneas — el resto fue eliminado.
 
 ---
 
@@ -800,9 +818,9 @@ Invariantes completados : 186 / 186  [OK]
 | `SegmentoIntermedio` | Clase | Hilos H1–H5: pipeline, loop infinito, terminación por interrupción |
 | `SegmentoSalida` | Clase | Hilo H6: exit handler, auto-terminación tras 186 disparos de T11 (1 hilo; T11 es inmediata) |
 | `TiemposTransicion` | Clase | Tiempo mínimo `alfa` (β = ∞) de transiciones temporizadas; record `VentanaTemporal` |
-| `Logger` | Clase | Registro de disparos (`T<n>` por línea); rotación de logs (MAX_BACKUPS=5); shutdown hook |
+| `Logger` | Clase | Registro de disparos (`T<n>` por línea, solo transiciones); rotación de logs (MAX_BACKUPS=5); shutdown hook |
 | `AnalizadorInvariantes` | Clase | Verificación post-ejecución de T-invariantes por regex; reconstruye secuencias por FIFO sobre la estructura de la red |
 | `AnalizadorInvariantes.Resultado` | Clase interna estática | Transporta conteos y métricas del análisis sin acoplarse a la presentación |
 | `TipoPolitica` | Enum interno (Main) | Valores válidos de política y parseo desde argumento de línea de comandos |
-| `Main.ResultadoEjecucion` | Clase interna (Main) | Resultados de una ejecución: duración, estadísticas de política, análisis de invariantes |
-| `Main` | Clase | Punto de entrada; modo interactivo (menú, barra de progreso, tabla resumen) y modo batch |
+| `Main` | Clase | Punto de entrada; ejecución única con selección de política; barra de progreso; estadísticas en consola |
+| `analizar_log.py` | Script Python | Verificación y limpieza del log: reconstruye secuencias FIFO, clasifica con regex única, elimina invariantes completados del log |
