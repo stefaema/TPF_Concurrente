@@ -10,6 +10,14 @@ public class Logger {
 
     private final PrintWriter writer;
 
+    private Logger() {
+        this.writer = null;
+    }
+
+    public static Logger noOp() {
+        return new Logger();
+    }
+
     public Logger(String archivo) {
         File dir = new File(archivo).getParentFile();
         if (dir != null) dir.mkdirs();
@@ -27,10 +35,12 @@ public class Logger {
 
     // Invocado dentro del lock del Monitor — acceso completamente serializado.
     public void registrar(int t) {
+        if (writer == null) return;
         writer.println("T" + t);
     }
 
     public void cerrar() {
+        if (writer == null) return;
         writer.flush();
         writer.close();
     }
