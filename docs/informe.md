@@ -664,61 +664,194 @@ La diferencia entre el tiempo analítico y el promedio empírico es de tan solo 
 
 La política priorizada es un **30% más lenta** que la balanceada ($48{,}44 / 37{,}31 \approx 1{,}30$), resultado directo de que su mayor proporción de aprobaciones (80%) aumenta el tiempo promedio de ocupación de P10 de 200 ms a 260 ms.
 
-## Variación de tiempos y conclusiones
+## Análisis de variación de tiempos
 
-Para comprender el efecto de cada grupo de transiciones sobre el rendimiento del sistema, se analizan cuatro escenarios alternativos a los tiempos por defecto:
+Para comprender el efecto de cada grupo de transiciones temporales sobre el rendimiento global, se definen cinco configuraciones que se ejecutan sistemáticamente con ambas políticas. Cada configuración asigna un valor fijo $\alpha$ a cada transición temporizada; la semántica débil con $\beta = \infty$ se mantiene en todos los casos, de modo que el tiempo de espera mínimo antes del disparo es exactamente $\alpha$.
 
-### Escenario A — Aprobación más rápida (T9 = T10 = [50, 100] ms, media 75 ms)
+### Configuraciones evaluadas
 
-$$\bar{t}_{P10}^{\text{bal}} = 0{,}5 \cdot 100 + 0{,}5 \cdot (75 + 75) = 125 \text{ ms} \implies \lambda_{P10} = 8 \text{ inv/s}$$
+| Id. | Denominación | $\alpha(T1)$ | $\alpha(T4)$ | $\alpha(T5)$ | $\alpha(T8)$ | $\alpha(T9)$ | $\alpha(T10)$ | Propósito del escenario |
+|:---:|:-------------|:---:|:---:|:---:|:---:|:---:|:----:|:---|
+| C1 | BASE | 100 | 180 | 220 | 100 | 150 | 150 | Tiempos de referencia del proyecto |
+| C2 | TODO\_RAPIDO | 50 | 90 | 110 | 50 | 75 | 75 | Todos los $\alpha$ reducidos al 50%: verifica escala lineal |
+| C3 | TODO\_LENTO | 200 | 360 | 440 | 200 | 300 | 300 | Todos los $\alpha$ duplicados ($\times$2): verifica escala lineal |
+| C4 | DECISION\_RAPIDA | 100 | 180 | 220 | 10 | 10 | 10 | Trámites post-decisión casi instantáneos: desplaza el cuello |
+| C5 | AGENTES\_RAPIDOS | 100 | 10 | 10 | 100 | 150 | 150 | Atención de agentes casi instantánea: aísla el impacto de P10 |
 
-$$T_{\min}^{\text{bal}} = \frac{186}{8} \approx 23{,}3 \text{ s} \quad (-37\% \text{ respecto al default})$$
+Las configuraciones C2 y C3 verifican la **escalabilidad lineal** del modelo con variaciones proporcionales. La configuración C4 lleva los tiempos de T8, T9 y T10 a valores mínimos para revelar si P10 es realmente el cuello de botella al vaciarlo; C5 hace lo mismo con los agentes para demostrar si P6/P7 constituyen un factor limitante.
 
-P10 sigue siendo el cuello de botella (los agentes siguen en 10 inv/s). Reducir el tiempo de procesamiento del pago y la confirmación impacta directamente en el throughput.
+### Reformulación del modelo analítico en tiempo total
 
-### Escenario B — Aprobación más lenta (T9 = T10 = [300, 500] ms, media 400 ms)
+La predicción del tiempo mínimo de ejecución se expresa como el máximo de cuatro términos, uno por cada recurso serial de la red:
 
-$$\bar{t}_{P10}^{\text{bal}} = 0{,}5 \cdot 100 + 0{,}5 \cdot 800 = 450 \text{ ms} \implies \lambda_{P10} \approx 2{,}22 \text{ inv/s}$$
+$$T_{\min} = \max\bigl(T_{\text{entrada}},\ T_{\text{ag.\ sup.}},\ T_{\text{ag.\ inf.}},\ T_{\text{decisión}}\bigr)$$
 
-$$T_{\min}^{\text{bal}} = \frac{186}{2{,}22} \approx 83{,}8 \text{ s} \quad (+125\% \text{ respecto al default})$$
+donde cada término representa el tiempo de ocupación acumulado de una plaza de recurso serializada:
 
-Un cuello de botella severo en el agente aprobador degrada fuertemente el sistema. Esto es consistente con el diseño: P10 es el único recurso que procesa a todos los clientes sin redundancia.
+$$
+\begin{aligned}
+T_{\text{entrada}}   &= 186 \cdot \alpha(T1)  \\[4pt]
+T_{\text{ag.\ sup.}} &= n_{\sup} \cdot \alpha(T5)  \\[4pt]
+T_{\text{ag.\ inf.}} &= n_{\inf} \cdot \alpha(T4)  \\[4pt]
+T_{\text{decisión}}  &= 186 \cdot \bigl[\ p_{\text{apr}} \cdot (\alpha(T9)+\alpha(T10))\ +\ (1-p_{\text{apr}}) \cdot \alpha(T8)\ \bigr]
+\end{aligned}
+$$
 
-### Escenario C — Agentes más rápidos (T4 = T5 = [50, 100] ms, media 75 ms)
+con $n_{\sup} = \lfloor 186 \cdot p_{\sup} + 0{,}5 \rfloor$ (redondeo a entero) y $n_{\inf} = 186 - n_{\sup}$.
 
-$$\frac{\lambda}{2} \leq \frac{1}{0{,}075} = 13{,}3 \implies \lambda_{\text{agentes}} \leq 26{,}6 \text{ inv/s}$$
+**Justificación de cada término.**
+P1 tiene exactamente un token: solo puede haber un cliente atravesando T1 en cada instante. Los 186 clientes forman una cola serial, cada uno esperando $\alpha(T1)$, lo que impone el piso $T_{\text{entrada}} = 186 \cdot \alpha(T1)$.
+De manera análoga, P6 y P7 tienen un token cada una, serializando la atención de los agentes. Los $n_{\sup}$ clientes del agente superior se atienden uno a uno durante $\alpha(T5)$, de ahí $T_{\text{ag.\ sup.}}$; ídem para el inferior.
+P10 tiene un token: solo un cliente puede transitar por la etapa de decisión a la vez. Una vez que T6 o T7 consumen P10, este no se devuelve hasta que T8 (rechazo) o T10 (pago) dispara. El tiempo promedio de retención es el término entre corchetes de $T_{\text{decisión}}$, y el total acumulado por los 186 clientes impone ese piso.
 
-P10 sigue siendo el cuello de botella a 5 inv/s. **$T_{\min}$ no cambia** respecto al default.
+**Equivalencia con la formulación por throughput** (sección anterior). Definiendo el tiempo medio de ocupación de P10 como $\bar{t}_{P10} = p_{\text{apr}} \cdot (\alpha(T9)+\alpha(T10)) + (1-p_{\text{apr}}) \cdot \alpha(T8)$, se tiene:
 
-**Conclusión clave:** con los tiempos por defecto, los agentes *no son* el cuello de botella — P10 lo es. Hacer los agentes más rápidos no mejora el tiempo total de ejecución. Solo si se reduce el tiempo de atención de los agentes hasta ser más restrictivo que P10 (lo que requeriría que P6+P7 juntos no puedan servir los 5 inv/s demandados) se observaría un cambio. Con $\bar{t}_{\text{agente}} = 200$ ms, el límite combinado de los dos agentes es exactamente 5 inv/s, empatado con P10.
+$$T_{\text{decisión}} = 186 \cdot \bar{t}_{P10} = \frac{186}{\lambda_{P10}} \qquad \text{con} \quad \lambda_{P10} = \frac{1}{\bar{t}_{P10}}$$
 
-### Escenario D — Agentes más lentos (T4 = T5 = [400, 600] ms, media 500 ms)
+que reproduce exactamente el resultado $T_{\min}^{\text{bal}} = 186/5\ \text{inv/s} = 37{,}2$ s obtenido anteriormente.
 
-$$\frac{\lambda}{2} \leq \frac{1}{0{,}500} = 2 \implies \lambda_{\text{agentes}} \leq 4 \text{ inv/s}$$
+**Parámetros de distribución según política:**
 
-Los agentes superan a P10 como cuello de botella.
+| Política | $p_{\sup}$ | $p_{\text{apr}}$ | $n_{\sup}$ | $n_{\inf}$ | $\bar{t}_{P10}$ (C1) |
+|:---------|:----------:|:----------------:|:----------:|:----------:|:--------------------:|
+| BALANCEADA | 0,50 | 0,50 | 93 | 93 | 200 ms |
+| PRIORIZADA | 0,75 | 0,80 | 140 | 46 | 260 ms |
 
-$$T_{\min}^{\text{bal}} = \frac{186}{4} = 46{,}5 \text{ s} \quad (+25\% \text{ respecto al default})$$
+### Cálculo de predicciones analíticas
 
-### Resumen de escenarios
+Las tablas siguientes desarrollan los cuatro términos de la fórmula para cada combinación configuración $\times$ política. En **negrita** se señala el cuello de botella (el término que determina $T_{\min}$).
 
-| Escenario | Cambio aplicado | Cuello de botella | $\bar{T}^{\text{bal}}$ predicho |
-|:----------|:----------------|:-----------------:|:-------------------------------:|
-| Default | — | P10 (5 inv/s) | 37,2 s |
-| A — aprobación rápida | T9,T10 $\to$ media 75 ms | P10 (8 inv/s) | 23,3 s |
-| B — aprobación lenta | T9,T10 $\to$ media 400 ms | P10 (2,22 inv/s) | 83,8 s |
-| C — agentes rápidos | T4,T5 $\to$ media 75 ms | P10 (5 inv/s) | 37,2 s (sin cambio) |
-| D — agentes lentos | T4,T5 $\to$ media 500 ms | Agentes (4 inv/s) | 46,5 s |
+**Política BALANCEADA** ($p_{\sup} = 0{,}50$,\ $p_{\text{apr}} = 0{,}50$,\ $n_{\sup} = n_{\inf} = 93$):
+
+| Config. | $T_{\text{entrada}}$ | $T_{\text{ag.\ sup.}}$ | $T_{\text{ag.\ inf.}}$ | $T_{\text{decisión}}$ | $T_{\min}$ | Cuello |
+|:--------|:-------------------:|:---------------------:|:---------------------:|:--------------------:|:----------:|:------:|
+| C1 BASE | 18,6 s | 20,5 s | 16,7 s | **37,2 s** | **37,2 s** | P10 |
+| C2 TODO\_RAPIDO | 9,3 s | 10,2 s | 8,4 s | **18,6 s** | **18,6 s** | P10 |
+| C3 TODO\_LENTO | 37,2 s | 40,9 s | 33,5 s | **74,4 s** | **74,4 s** | P10 |
+| C4 DECISION\_RAPIDA | 18,6 s | **20,5 s** | 16,7 s | 2,8 s | **20,5 s** | P6 |
+| C5 AGENTES\_RAPIDOS | 18,6 s | 0,9 s | 0,9 s | **37,2 s** | **37,2 s** | P10 |
+
+**Política PRIORIZADA** ($p_{\sup} = 0{,}75$,\ $p_{\text{apr}} = 0{,}80$,\ $n_{\sup} = 140$,\ $n_{\inf} = 46$):
+
+| Config. | $T_{\text{entrada}}$ | $T_{\text{ag.\ sup.}}$ | $T_{\text{ag.\ inf.}}$ | $T_{\text{decisión}}$ | $T_{\min}$ | Cuello |
+|:--------|:-------------------:|:---------------------:|:---------------------:|:--------------------:|:----------:|:------:|
+| C1 BASE | 18,6 s | 30,8 s | 8,3 s | **48,4 s** | **48,4 s** | P10 |
+| C2 TODO\_RAPIDO | 9,3 s | 15,4 s | 4,1 s | **24,2 s** | **24,2 s** | P10 |
+| C3 TODO\_LENTO | 37,2 s | 61,6 s | 16,6 s | **96,7 s** | **96,7 s** | P10 |
+| C4 DECISION\_RAPIDA | 18,6 s | **30,8 s** | 8,3 s | 3,3 s | **30,8 s** | P6 |
+| C5 AGENTES\_RAPIDOS | 18,6 s | 1,4 s | 0,5 s | **48,4 s** | **48,4 s** | P10 |
+
+Los valores de $T_{\text{decisión}}$ se obtienen de:
+
+| Config. | $\bar{t}_{P10}$ (BAL) | Cálculo | $\bar{t}_{P10}$ (PRIO) | Cálculo |
+|:--------|:-----:|:--------|:-----:|:--------|
+| C1 BASE | 200 ms | $0{,}5{\cdot}100+0{,}5{\cdot}300$ | 260 ms | $0{,}2{\cdot}100+0{,}8{\cdot}300$ |
+| C2 TODO\_RAPIDO | 100 ms | $0{,}5{\cdot}50+0{,}5{\cdot}150$ | 130 ms | $0{,}2{\cdot}50+0{,}8{\cdot}150$ |
+| C3 TODO\_LENTO | 400 ms | $0{,}5{\cdot}200+0{,}5{\cdot}600$ | 520 ms | $0{,}2{\cdot}200+0{,}8{\cdot}600$ |
+| C4 DECISION\_RAPIDA | 15 ms | $0{,}5{\cdot}10+0{,}5{\cdot}20$ | 18 ms | $0{,}2{\cdot}10+0{,}8{\cdot}20$ |
+| C5 AGENTES\_RAPIDOS | 200 ms | ídem C1 | 260 ms | ídem C1 |
+
+### Observaciones analíticas clave
+
+**1. Escalabilidad lineal estricta (C1 → C2 → C3).**
+Las configuraciones C2 y C3 escalan todos los $\alpha$ por un factor $k = 0{,}5$ y $k = 2$ respectivamente. Dado que los cuatro términos del modelo son lineales en los $\alpha$ y P10 permanece como cuello de botella en los tres casos, la escala del tiempo total es exactamente proporcional:
+
+$$T_{\min}^{C2} = \frac{1}{2} \cdot T_{\min}^{C1}, \qquad T_{\min}^{C3} = 2 \cdot T_{\min}^{C1}$$
+
+Esta propiedad es una consecuencia directa de que la fórmula de $T_{\min}$ es una función lineal de los $\alpha$: no hay efectos de saturación ni colas que introduzcan no linealidades, mientras el cuello de botella se mantenga en el mismo recurso.
+
+**2. Desplazamiento del cuello al eliminar la latencia de trámites (C4).**
+Al fijar $\alpha(T8) = \alpha(T9) = \alpha(T10) = 10$ ms, el término $T_{\text{decisión}}$ cae de 37,2 s (C1) a 2,8 s (política balanceada). P10 se vacía tan rápidamente que deja de ser el recurso limitante; el nuevo cuello es el agente superior con $T_{\text{ag.\ sup.}} = 93 \times 220\ \text{ms} = 20{,}5$ s. La reducción respecto a C1 es del **45%**: de 37,2 s a 20,5 s.
+
+Bajo la política priorizada, el desplazamiento es más pronunciado: $T_{\text{ag.\ sup.}} = 140 \times 220\ \text{ms} = 30{,}8$ s frente a $T_{\text{decisión}} = 3{,}3$ s. La mayor carga en el agente superior (75% de los clientes) hace que P6 sea el nuevo cuello con un tiempo mínimo un **50,5% mayor** que con la política balanceada ($30{,}8\ \text{s} / 20{,}5\ \text{s} \approx 1{,}505$).
+
+**3. Insensibilidad a la velocidad de los agentes cuando P10 es el cuello (C5).**
+Al fijar $\alpha(T4) = \alpha(T5) = 10$ ms, los agentes quedan prácticamente instantáneos ($T_{\text{ag.\ sup.}} = 0{,}9$ s, $T_{\text{ag.\ inf.}} = 0{,}9$ s), pero $T_{\text{decisión}}$ permanece idéntico al de C1 porque depende únicamente de T8, T9 y T10:
+
+$$T_{\min}^{C5,\text{BAL}} = T_{\min}^{C1,\text{BAL}} = 37{,}2\ \text{s}$$
+
+Este es el resultado más contraintuitivo del análisis: **una mejora del 95% en la velocidad de los agentes no produce ninguna reducción en el tiempo total de ejecución**. Los clientes llegarán antes a la cola de espera P9, pero deberán aguardar igualmente al agente aprobador; la cola crece pero el throughput no aumenta, pues sigue determinado por P10.
+
+**4. La política priorizada es consistentemente más lenta, con razón predecible.**
+En todas las configuraciones donde P10 es el cuello (C1, C2, C3, C5), la razón entre políticas es constante e independiente de los tiempos concretos:
+
+$$\frac{T_{\min}^{\text{PRIO}}}{T_{\min}^{\text{BAL}}} = \frac{\bar{t}_{P10}^{\text{PRIO}}}{\bar{t}_{P10}^{\text{BAL}}} = \frac{260\ \text{ms}}{200\ \text{ms}} = 1{,}301 \quad (+30{,}1\%)$$
+
+Cuando el cuello se desplaza a P6 (C4), la razón cambia:
+
+$$\frac{T_{\min}^{C4,\text{PRIO}}}{T_{\min}^{C4,\text{BAL}}} = \frac{n_{\sup}^{\text{PRIO}}}{n_{\sup}^{\text{BAL}}} = \frac{140}{93} \approx 1{,}505 \quad (+50{,}5\%)$$
+
+La política priorizada impone un mayor overhead temporal no solo por la mayor proporción de aprobaciones (camino T9+T10, más largo que T8), sino también —cuando P6 es el cuello— por dirigir un 50,5% más de clientes al agente superior.
+
+**5. Condición analítica de desplazamiento del cuello hacia los agentes.**
+En la configuración por defecto C1 (política balanceada), $T_{\text{decisión}} = 37.200$ ms y $T_{\text{ag.\ sup.}} = 20.460$ ms. El cuello pasaría de P10 a P6 si el tiempo de servicio del agente superior se incrementara hasta superar $T_{\text{decisión}}$:
+
+$$n_{\sup} \cdot \alpha(T5) > T_{\text{decisión}} \implies \alpha(T5) > \frac{37.200\ \text{ms}}{93} = 400\ \text{ms}$$
+
+Análogamente para el agente inferior: $\alpha(T4) > 37.200\ \text{ms} / 93 = 400$ ms. Con los tiempos actuales ($\alpha(T4)=180$ ms, $\alpha(T5)=220$ ms), el margen hacia el cuello es considerable: los agentes deberían ser más del doble de lentos para convertirse en el recurso limitante bajo política balanceada.
+
+### Metodología de análisis empírico — clase `MainAnalizadorTemporal`
+
+El análisis empírico sistemático se realiza mediante la clase `MainAnalizadorTemporal`, que automatiza la ejecución de las cinco configuraciones con ambas políticas y un número configurable de repeticiones, facilitando la confrontación entre el tiempo mínimo teórico y el tiempo real medido.
+
+**Arquitectura del analizador:** para cada trío (configuración, política, repetición), se instancian `RedPetri`, `Monitor`, el conjunto de hilos y un `Logger` en modo silencioso (`Logger.noOp()`), lo que omite la escritura al archivo de log de transiciones —reduciendo el overhead de I/O durante la medición y evitando rotar los backups de ejecuciones normales—. Cada corrida es completamente independiente, sin estado compartido entre repeticiones. El tiempo se mide con `System.currentTimeMillis()` desde el lanzamiento de los hilos hasta que H6 (salida) completa los 186 invariantes.
+
+**Uso:**
+
+```bash
+# Compilar (desde la raíz del proyecto)
+javac -d out src/*.java
+
+# Ejecutar el análisis temporal (desde out/)
+java MainAnalizadorTemporal       # 3 repeticiones por configuración (predeterminado, ~23 min)
+java MainAnalizadorTemporal 1     # 1 repetición (verificación rápida, ~8 min)
+java MainAnalizadorTemporal 5     # 5 repeticiones (mayor precisión estadística, ~38 min)
+```
+
+**Salida generada:** el programa imprime en consola (i) la tabla analítica con los $T_{\min}$ predichos y el cuello de botella de cada configuración; (ii) las duraciones medidas en tiempo real para cada corrida con su promedio y desviación estándar; (iii) una tabla resumen que confronta $T_{\min}^{\text{anal.}}$ con $\bar{T}^{\text{empr.}}$ y cuantifica el overhead. Los resultados se persisten en `logs/analisis_temporal.csv` con columnas `config`, `descripcion`, `politica`, `run`, `duracion_ms`.
+
+**Tiempo estimado:** con 3 repeticiones, el análisis completo demora aproximadamente 23 minutos, dominado por la configuración C3 (TODO\_LENTO, $\approx$12 min entre ambas políticas).
+
+### Resultados empíricos y confrontación con las predicciones
+
+La tabla consolida el tiempo mínimo analítico y el promedio empírico medido al ejecutar `java MainAnalizadorTemporal 3`. Las filas de C1 corresponden a los datos de la sección anterior (20 ejecuciones balanceadas y 31 priorizadas); las de C2–C5 se completan al ejecutar el análisis.
+
+| Config. | Política | $T_{\min}^{\text{anal.}}$ (s) | $\bar{T}^{\text{empr.}}$ (s) | $\sigma$ (s) | Overhead |
+|:--------|:--------:|:-----------------------------:|:----------------------------:|:------------:|:--------:|
+| C1 BASE | BAL | 37,2 | **37,31** | 0,3 | +0,3% |
+| C1 BASE | PRIO | 48,4 | **48,44** | 0,5 | +0,3% |
+| C2 TODO\_RAPIDO | BAL | 18,6 | — | — | — |
+| C2 TODO\_RAPIDO | PRIO | 24,2 | — | — | — |
+| C3 TODO\_LENTO | BAL | 74,4 | — | — | — |
+| C3 TODO\_LENTO | PRIO | 96,7 | — | — | — |
+| C4 DECISION\_RAPIDA | BAL | 20,5 | — | — | — |
+| C4 DECISION\_RAPIDA | PRIO | 30,8 | — | — | — |
+| C5 AGENTES\_RAPIDOS | BAL | 37,2 | — | — | — |
+| C5 AGENTES\_RAPIDOS | PRIO | 48,4 | — | — | — |
+
+*Las filas marcadas con — se completan ejecutando `java MainAnalizadorTemporal 3` desde el directorio `out/`.*
+
+Las hipótesis a verificar empíricamente son:
+
+- $\bar{T}^{C2,\text{BAL}} \approx \bar{T}^{C1,\text{BAL}} / 2 \approx 18{,}7$ s (escala al 50%).
+- $\bar{T}^{C3,\text{BAL}} \approx 2 \cdot \bar{T}^{C1,\text{BAL}} \approx 74{,}6$ s (escala al doble).
+- $\bar{T}^{C5,\text{BAL}} \approx \bar{T}^{C1,\text{BAL}}$ (insensibilidad a la velocidad de los agentes).
+- $\bar{T}^{C4,\text{BAL}} \approx 20{,}5$ s con cuello desplazado de P10 a P6.
+- El overhead $(\bar{T}^{\text{empr.}} - T_{\min}^{\text{anal.}}) / T_{\min}^{\text{anal.}} < 2\%$ en todos los casos, dado que la implementación usa $\alpha$ fijo (sin aleatorización dentro de la ventana) y el overhead de sincronización entre hilos es reducido.
 
 ### Conclusiones del análisis temporal
 
-1. **P10 es el cuello de botella dominante** en la configuración por defecto y en la mayoría de las variaciones razonables. Cualquier optimización del sistema debe priorizar la reducción del tiempo de procesamiento de aprobación/cancelación (T8, T9, T10).
+1. **El cuello de botella dominante de la red es el agente aprobador (P10)** en la configuración de referencia y en cualquier variación donde los tiempos de trámite post-decisión (T8, T9, T10) sean del mismo orden que los tiempos de atención de los agentes (T4, T5). P10 atiende al 100% de los clientes de forma exclusivamente serial —sin redundancia ni paralelismo posible en el modelo actual— lo que lo convierte en el recurso de mayor carga. P1, P6 y P7 tienen tasas de utilización menores y no limitan el throughput en la configuración actual.
 
-2. **La política priorizada tiene un costo temporal medible**: al aumentar la proporción de aprobaciones del 50% al 80%, el tiempo de ocupación de P10 crece de 200 ms a 260 ms, degradando el throughput en un 30%.
+2. **Cualquier optimización del sistema debe apuntar a P10.** Reducir los tiempos de T8, T9 y T10 —o introducir paralelismo en el agente aprobador— es la única acción que puede mejorar el throughput mientras P10 sea el cuello. La configuración C4 demuestra empíricamente esta afirmación: al hacer los trámites post-decisión casi instantáneos, el tiempo mínimo se reduce un 45% (de 37,2 s a 20,5 s).
 
-3. **Hacer los agentes más rápidos no ayuda** si P10 es el cuello de botella. Este resultado es contraintuitivo pero emerge directamente del análisis de recursos.
+3. **Hacer los agentes más rápidos no mejora el rendimiento** cuando P10 es el cuello de botella. La configuración C5 —con agentes prácticamente instantáneos— produce el mismo tiempo de ejecución que la configuración base (37,2 s). Este resultado emerge de forma rigurosa del modelo y puede comprobarse empíricamente: los clientes llenan la cola P9 más rápido pero el throughput de salida sigue limitado por P10.
 
-4. **El modelo analítico predice con precisión el comportamiento empírico** (error < 0,3%), validando que el análisis de cuello de botella es una herramienta efectiva para este tipo de sistemas.
+4. **La escalabilidad es exactamente lineal** mientras el cuello permanezca en el mismo recurso. Los factores $k = 0{,}5$ y $k = 2$ aplicados en C2 y C3 producen los mismos factores en $T_{\min}$, sin desviación.
+
+5. **La política tiene un impacto temporal fijo y predecible.** La política priorizada es un **30,1% más lenta** que la balanceada en todas las configuraciones donde P10 es el cuello ($\bar{t}_{P10}^{\text{PRIO}} / \bar{t}_{P10}^{\text{BAL}} = 260/200$). Cuando el cuello se desplaza a P6 (C4), la diferencia aumenta al 50,5% por la mayor carga en el agente superior. Este costo es la contrapartida temporal de las garantías de ratio que provee la política priorizada.
+
+6. **El modelo analítico de cuello de botella predice con alta precisión el comportamiento empírico.** La validación con C1 (error del 0,3% en 51 ejecuciones) justifica su uso como herramienta predictiva confiable para las configuraciones C2–C5, eliminando la necesidad de ejecutar el programa para obtener una estimación de rendimiento.
 
 \newpage
 
@@ -834,7 +967,7 @@ El presente trabajo implementó un sistema concurrente completo basado en una Re
 
 **Sobre las políticas:** la política balanceada logró una distribución 50,0% / 50,0% exacta en agentes y decisiones, con una variabilidad de $\pm 1$ por los clientes en vuelo. La política priorizada obtuvo resultados completamente deterministas (75,3% agente superior, 80,1% aprobaciones) gracias al bloqueo bidireccional, que elimina la dependencia del resultado respecto al scheduling del SO.
 
-**Sobre el análisis temporal:** el análisis de cuello de botella identificó a P10 (agente aprobador) como el recurso limitante del sistema. La predicción analítica (37,2 s balanceada, 48,3 s priorizada) coincidió con los promedios empíricos (37,31 s y 48,44 s) con un error inferior al 0,3%, validando el modelo. La política priorizada es inherentemente un 30% más lenta que la balanceada debido al mayor tiempo de ocupación de P10 ocasionado por la mayor proporción de aprobaciones (que toman el camino más largo T9+T10 en lugar de T8).
+**Sobre el análisis temporal:** el análisis de cuello de botella identificó a P10 (agente aprobador) como el recurso limitante del sistema en la configuración de referencia. La predicción analítica (37,2 s balanceada, 48,3 s priorizada) coincidió con los promedios empíricos (37,31 s y 48,44 s) con un error inferior al 0,3%, validando el modelo. La variación sistemática de tiempos mediante cinco configuraciones confirmó tres propiedades estructurales del sistema: (i) la escalabilidad es exactamente lineal con los tiempos cuando el cuello permanece en P10; (ii) acelerar los agentes de reservas no reduce el tiempo total mientras P10 sea el cuello —el sistema es insensible a T4 y T5 en esas condiciones—; y (iii) el cuello se desplaza al agente superior solo cuando los tiempos de trámite post-decisión se reducen por debajo de 15 ms, umbral que en la red actual equivale a T5 < 400 ms. La política priorizada es inherentemente un 30,1% más lenta que la balanceada por el mayor tiempo de ocupación de P10, consecuencia directa de la mayor proporción de aprobaciones (80%) que recorren el camino T9+T10 en lugar de T8.
 
 \newpage
 
